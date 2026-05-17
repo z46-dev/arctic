@@ -297,6 +297,7 @@ func (client *Client) setConnection(conn net.Conn) {
 func (client *Client) readMessages() {
 	var conn net.Conn = client.connection()
 	var reader io.Reader
+	var readBuffer []byte
 
 	defer client.Close()
 
@@ -304,17 +305,15 @@ func (client *Client) readMessages() {
 		reader = bufio.NewReaderSize(conn, tcpReadBufferSize(client.config.BufferSize))
 	}
 
-	client.readMessagesFrom(reader)
+	client.readMessagesFrom(reader, &readBuffer)
 }
 
-func (client *Client) readMessagesFrom(reader io.Reader) {
-	var readBuffer []byte
-
+func (client *Client) readMessagesFrom(reader io.Reader, readBuffer *[]byte) {
 	for reader != nil {
 		var message []byte
 		var err error
 
-		if message, err = readFrame(reader, client.config.BufferSize, client.config.UnsafeZeroCopy, &readBuffer); err != nil {
+		if message, err = readFrame(reader, client.config.BufferSize, client.config.UnsafeZeroCopy, readBuffer); err != nil {
 			client.handleError(err)
 			return
 		}
@@ -454,11 +453,12 @@ func (server *Server) acceptClient(conn net.Conn) {
 	var handler ClientHandler
 	var firstMessage []byte
 	var hasFirstMessage bool
+	var readBuffer []byte
 	var err error
 
 	defer server.removeClient(client.id)
 
-	if firstMessage, hasFirstMessage, err = client.receiveMetadataHandshake(reader); err != nil {
+	if firstMessage, hasFirstMessage, err = client.receiveMetadataHandshake(reader, &readBuffer); err != nil {
 		server.handleError(err)
 		var _ error = client.Close()
 		return
@@ -474,7 +474,7 @@ func (server *Server) acceptClient(conn net.Conn) {
 		client.dispatchMessage(firstMessage)
 	}
 
-	client.readMessagesFrom(reader)
+	client.readMessagesFrom(reader, &readBuffer)
 	var _ error = client.Close()
 }
 

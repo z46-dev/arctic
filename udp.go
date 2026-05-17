@@ -280,24 +280,23 @@ func (server *Server) readUDPLoop(
 			return
 		}
 
-		client = server.udpClientSnapshot(addr)
+		if metadata, isMetadata, err = decodeMetadataHandshake(buffer[:count]); err != nil {
+			server.handleError(err)
+			continue
+		}
 
-		if client == nil {
-			if metadata, isMetadata, err = decodeMetadataHandshake(buffer[:count]); err != nil {
-				server.handleError(err)
-				continue
-			}
+		if isMetadata {
+			client, created = server.udpClientFor(conn, addr)
 
-			if isMetadata {
-				client, created = server.udpClientFor(conn, addr)
+			if !client.hasMetadata() {
 				client.setMetadata(metadata)
-
-				if created && onClient != nil {
-					onClient(client)
-				}
-
-				continue
 			}
+
+			if created && onClient != nil {
+				onClient(client)
+			}
+
+			continue
 		}
 
 		if count > server.config.BufferSize {
@@ -383,13 +382,6 @@ func (server *Server) acceptUDPClient(client *ServerClient) {
 
 func (server *Server) dispatchUDPMessage(client *ServerClient, message []byte) {
 	client.dispatchMessage(message)
-}
-
-func (server *Server) udpClientSnapshot(addr udpClientKey) (serverClient *ServerClient) {
-	server.mutex.RLock()
-	serverClient = server.udpClients[addr]
-	server.mutex.RUnlock()
-	return
 }
 
 func (server *Server) udpClientFor(conn *net.UDPConn, addr udpClientKey) (serverClient *ServerClient, created bool) {

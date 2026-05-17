@@ -14,7 +14,7 @@ A TCP/UDP client-server abstraction library written in Go
 - Graceful shutdown
 - Configurable timeouts and buffer sizes
 - Middleware support for custom processing
-- Client metadata available during `OnClient`
+- Client metadata handshake support
 - Optional unsafe zero-copy receive buffers
 
 UDP is datagram-based. Arctic tracks server-side UDP peers as virtual clients keyed by remote address. Raw UDP remains best-effort and does not add reliability, ordering, retransmits, or remote connection teardown semantics.
@@ -22,7 +22,7 @@ Use TCP when you need reliable ordered delivery. Use UDP when you want fast best
 
 ## Client Metadata
 
-Clients can attach JSON-compatible metadata to the connection. Arctic sends it as an internal open handshake, so server `OnClient` handlers can read it before normal `OnMessage` traffic starts.
+Clients can attach JSON-compatible metadata to the connection. For TCP and Gob-over-TCP, Arctic sends it as an internal open handshake, so server `OnClient` handlers can read it before normal `OnMessage` traffic starts.
 
 ```go
 client, err = arctic.NewClient(arctic.ClientConfig{
@@ -45,6 +45,8 @@ server.OnClient(func(client *arctic.ServerClient) {
 ```
 
 > Metadata values should be JSON-compatible: strings, booleans, numbers, `nil`, arrays, and objects. Numeric values are decoded as `json.Number` on the server side.
+
+> UDP metadata is best-effort. Arctic sends it as an initial datagram, but UDP can drop or reorder datagrams, so a UDP `OnClient` handler may run before metadata is available. If a valid metadata datagram arrives later, Arctic stores it for future `Metadata()` calls, but `OnClient` is not called again.
 
 ## Unsafe Zero-Copy
 

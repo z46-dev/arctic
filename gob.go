@@ -1,6 +1,7 @@
 package arctic
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/gob"
 	"net"
@@ -209,6 +210,7 @@ func (client *GobClient[MessageType]) messagePipeline() (handler GobMessageHandl
 
 func (server *GobServer[MessageType]) acceptClient(conn net.Conn) {
 	var raw *ServerClient = server.Server.newServerClient(conn)
+	var reader *bufio.Reader = bufio.NewReaderSize(conn, tcpReadBufferSize(raw.config.BufferSize))
 	var err error
 	var handler GobClientHandler[MessageType]
 	var client *GobServerClient[MessageType] = &GobServerClient[MessageType]{
@@ -216,13 +218,13 @@ func (server *GobServer[MessageType]) acceptClient(conn net.Conn) {
 		GobClient: &GobClient[MessageType]{
 			Client:  raw.Client,
 			encoder: gob.NewEncoder(conn),
-			decoder: gob.NewDecoder(conn),
+			decoder: gob.NewDecoder(reader),
 		},
 	}
 
 	defer server.Server.removeClient(client.id)
 
-	if _, _, err = raw.Client.receiveMetadataHandshake(conn); err != nil {
+	if err = raw.Client.receiveOptionalMetadataHandshake(reader); err != nil {
 		server.Server.handleError(err)
 		var _ error = raw.Client.Close()
 		return
