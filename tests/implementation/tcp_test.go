@@ -1,7 +1,10 @@
 package implementation
 
 import (
+	"encoding/gob"
+	"encoding/json"
 	"errors"
+	"net"
 	"testing"
 	"time"
 
@@ -14,6 +17,34 @@ type (
 		Text string
 	}
 )
+
+func assertMetadata(t testing.TB, received <-chan map[string]any) (metadata map[string]any) {
+	t.Helper()
+
+	var (
+		ok bool
+	)
+
+	select {
+	case metadata = <-received:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for metadata")
+	}
+
+	if metadata["tenant"] != "acme" {
+		t.Fatalf("expected tenant metadata %q, got %#v", "acme", metadata["tenant"])
+	}
+
+	if metadata["attempt"] != json.Number("7") {
+		t.Fatalf("expected attempt metadata %q, got %#v", "7", metadata["attempt"])
+	}
+
+	if _, ok = metadata["debug"].(bool); !ok || metadata["debug"] != true {
+		t.Fatalf("expected debug metadata true, got %#v", metadata["debug"])
+	}
+
+	return
+}
 
 func TestTCPClientServerRoundTrip(t *testing.T) {
 	var (
@@ -108,6 +139,105 @@ func TestTCPClientServerRoundTrip(t *testing.T) {
 	util.AssertNoAsyncError(t, asyncErrors)
 }
 
+func TestTCPClientMetadataAvailableOnClient(t *testing.T) {
+	var (
+		server           *arctic.Server
+		client           *arctic.Client
+		err              error
+		address          string
+		listenDone       chan error
+		asyncErrors      chan error          = make(chan error, 8)
+		receivedMetadata chan map[string]any = make(chan map[string]any, 1)
+		received         chan []byte         = make(chan []byte, 1)
+		metadata         map[string]any      = map[string]any{
+			"tenant":  "acme",
+			"attempt": 7,
+			"debug":   true,
+			"profile": map[string]any{
+				"role": "admin",
+				"tags": []any{"blue"},
+			},
+		}
+	)
+
+	if server, err = arctic.NewServer(arctic.ServerConfig{
+		BindAddress: "127.0.0.1:0",
+		BufferSize:  1024,
+		Timeout:     time.Second,
+	}); err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	server.OnError(func(err error) {
+		asyncErrors <- err
+	})
+
+	server.OnClient(func(client *arctic.ServerClient) {
+		receivedMetadata <- client.Metadata()
+
+		client.OnMessage(func(message []byte) {
+			var err error
+
+			if err = client.Send(append([]byte("meta:"), message...)); err != nil {
+				asyncErrors <- err
+			}
+		})
+	})
+
+	listenDone = util.StartServer(t, server)
+	address = util.WaitForAddress(t, server)
+
+	if client, err = arctic.NewClient(arctic.ClientConfig{
+		ServerAddress: address,
+		BufferSize:    1024,
+		Timeout:       time.Second,
+		Metadata:      metadata,
+	}); err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+
+	metadata["tenant"] = "mutated"
+	metadata["profile"].(map[string]any)["role"] = "mutated"
+	metadata["profile"].(map[string]any)["tags"].([]any)[0] = "mutated"
+
+	client.OnError(func(err error) {
+		asyncErrors <- err
+	})
+
+	client.OnMessage(func(message []byte) {
+		received <- append([]byte{}, message...)
+	})
+
+	if err = client.Connect(); err != nil {
+		t.Fatalf("connect client: %v", err)
+	}
+
+	var serverMetadata map[string]any = assertMetadata(t, receivedMetadata)
+	var profile map[string]any = serverMetadata["profile"].(map[string]any)
+	var tags []any = profile["tags"].([]any)
+
+	if profile["role"] != "admin" {
+		t.Fatalf("expected nested role metadata %q, got %#v", "admin", profile["role"])
+	}
+
+	if tags[0] != "blue" {
+		t.Fatalf("expected nested tag metadata %q, got %#v", "blue", tags[0])
+	}
+
+	if err = client.Send([]byte("ping")); err != nil {
+		t.Fatalf("send message: %v", err)
+	}
+
+	util.AssertMessage(t, received, "meta:ping")
+
+	if err = client.Close(); err != nil {
+		t.Fatalf("close client: %v", err)
+	}
+
+	util.CloseServer(t, server, listenDone)
+	util.AssertNoAsyncError(t, asyncErrors)
+}
+
 func TestTCPUnsafeZeroCopyRoundTrip(t *testing.T) {
 	var (
 		server      *arctic.Server
@@ -188,7 +318,7 @@ func TestGobClientServerRoundTrip(t *testing.T) {
 		err         error
 		address     string
 		listenDone  chan error
-		asyncErrors chan error               = make(chan error, 8)
+		asyncErrors chan error           = make(chan error, 8)
 		received    chan util.GobMessage = make(chan util.GobMessage, 1)
 	)
 
@@ -263,6 +393,184 @@ func TestGobClientServerRoundTrip(t *testing.T) {
 		t.Fatalf("async error: %v", err)
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for gob echo")
+	}
+
+	if err = client.Close(); err != nil {
+		t.Fatalf("close gob client: %v", err)
+	}
+
+	util.CloseGobServer(t, server, listenDone)
+	util.AssertNoAsyncError(t, asyncErrors)
+}
+
+func TestGobServerAcceptsLegacyClientWithoutMetadataPrelude(t *testing.T) {
+	var (
+		server      *arctic.GobServer[util.GobMessage]
+		conn        net.Conn
+		encoder     *gob.Encoder
+		decoder     *gob.Decoder
+		message     util.GobMessage
+		err         error
+		address     string
+		listenDone  chan error
+		asyncErrors chan error = make(chan error, 8)
+	)
+
+	if err = arctic.RegisterGobType(util.GobMessage{}); err != nil {
+		t.Fatalf("register gob type: %v", err)
+	}
+
+	if server, err = arctic.NewGobServer[util.GobMessage](arctic.ServerConfig{
+		BindAddress: "127.0.0.1:0",
+		BufferSize:  1024,
+		Timeout:     time.Second,
+	}); err != nil {
+		t.Fatalf("new gob server: %v", err)
+	}
+
+	server.OnError(func(err error) {
+		asyncErrors <- err
+	})
+
+	server.OnClient(func(client *arctic.GobServerClient[util.GobMessage]) {
+		client.OnMessage(func(message util.GobMessage) {
+			var err error
+
+			if err = client.Send(util.GobMessage{
+				Text:  "legacy:" + message.Text,
+				Count: message.Count + 1,
+			}); err != nil {
+				asyncErrors <- err
+			}
+		})
+	})
+
+	listenDone = util.StartGobServer(t, server)
+	address = util.WaitForAddress(t, server)
+
+	if conn, err = net.Dial(string(arctic.ProtocolTCP), address); err != nil {
+		t.Fatalf("dial legacy gob client: %v", err)
+	}
+
+	defer func() {
+		var _ error = conn.Close()
+	}()
+
+	encoder = gob.NewEncoder(conn)
+	decoder = gob.NewDecoder(conn)
+
+	if err = encoder.Encode(util.GobMessage{Text: "ping", Count: 1}); err != nil {
+		t.Fatalf("legacy gob encode: %v", err)
+	}
+
+	if err = decoder.Decode(&message); err != nil {
+		t.Fatalf("legacy gob decode: %v", err)
+	}
+
+	var expected util.GobMessage = util.GobMessage{
+		Text:  "legacy:ping",
+		Count: 2,
+	}
+
+	if message != expected {
+		t.Fatalf("expected %#v, got %#v", expected, message)
+	}
+
+	util.CloseGobServer(t, server, listenDone)
+	util.AssertNoAsyncError(t, asyncErrors)
+}
+
+func TestGobClientMetadataAvailableOnClient(t *testing.T) {
+	var (
+		server           *arctic.GobServer[util.GobMessage]
+		client           *arctic.GobClient[util.GobMessage]
+		err              error
+		address          string
+		listenDone       chan error
+		asyncErrors      chan error           = make(chan error, 8)
+		receivedMetadata chan map[string]any  = make(chan map[string]any, 1)
+		received         chan util.GobMessage = make(chan util.GobMessage, 1)
+	)
+
+	if err = arctic.RegisterGobType(util.GobMessage{}); err != nil {
+		t.Fatalf("register gob type: %v", err)
+	}
+
+	if server, err = arctic.NewGobServer[util.GobMessage](arctic.ServerConfig{
+		BindAddress: "127.0.0.1:0",
+		BufferSize:  1024,
+		Timeout:     time.Second,
+	}); err != nil {
+		t.Fatalf("new gob server: %v", err)
+	}
+
+	server.OnError(func(err error) {
+		asyncErrors <- err
+	})
+
+	server.OnClient(func(client *arctic.GobServerClient[util.GobMessage]) {
+		receivedMetadata <- client.Metadata()
+
+		client.OnMessage(func(message util.GobMessage) {
+			var err error
+
+			if err = client.Send(util.GobMessage{
+				Text:  "gob-meta:" + message.Text,
+				Count: message.Count + 1,
+			}); err != nil {
+				asyncErrors <- err
+			}
+		})
+	})
+
+	listenDone = util.StartGobServer(t, server)
+	address = util.WaitForAddress(t, server)
+
+	if client, err = arctic.NewGobClient[util.GobMessage](arctic.ClientConfig{
+		ServerAddress: address,
+		BufferSize:    1024,
+		Timeout:       time.Second,
+		Metadata: map[string]any{
+			"tenant":  "acme",
+			"attempt": 7,
+			"debug":   true,
+		},
+	}); err != nil {
+		t.Fatalf("new gob client: %v", err)
+	}
+
+	client.OnError(func(err error) {
+		asyncErrors <- err
+	})
+
+	client.OnMessage(func(message util.GobMessage) {
+		received <- message
+	})
+
+	if err = client.Connect(); err != nil {
+		t.Fatalf("connect gob client: %v", err)
+	}
+
+	assertMetadata(t, receivedMetadata)
+
+	if err = client.Send(util.GobMessage{Text: "ping", Count: 1}); err != nil {
+		t.Fatalf("send gob message: %v", err)
+	}
+
+	select {
+	case message := <-received:
+		var expected util.GobMessage = util.GobMessage{
+			Text:  "gob-meta:ping",
+			Count: 2,
+		}
+
+		if message != expected {
+			t.Fatalf("expected %#v, got %#v", expected, message)
+		}
+	case err = <-asyncErrors:
+		t.Fatalf("async error: %v", err)
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for gob metadata echo")
 	}
 
 	if err = client.Close(); err != nil {

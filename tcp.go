@@ -29,6 +29,13 @@ func (client *Client) Connect() (err error) {
 	}
 
 	client.setConnection(conn)
+
+	if err = client.sendMetadataHandshake(); err != nil {
+		var _ error = conn.Close()
+		client.setConnection(nil)
+		return
+	}
+
 	go client.readMessages()
 	return
 }
@@ -289,7 +296,7 @@ func (client *Client) setConnection(conn net.Conn) {
 
 func (client *Client) readMessages() {
 	var conn net.Conn = client.connection()
-	var reader *bufio.Reader
+	var reader io.Reader
 	var readBuffer []byte
 
 	defer client.Close()
@@ -298,11 +305,15 @@ func (client *Client) readMessages() {
 		reader = bufio.NewReaderSize(conn, tcpReadBufferSize(client.config.BufferSize))
 	}
 
-	for conn != nil {
+	client.readMessagesFrom(reader, &readBuffer)
+}
+
+func (client *Client) readMessagesFrom(reader io.Reader, readBuffer *[]byte) {
+	for reader != nil {
 		var message []byte
 		var err error
 
-		if message, err = readFrame(reader, client.config.BufferSize, client.config.UnsafeZeroCopy, &readBuffer); err != nil {
+		if message, err = readFrame(reader, client.config.BufferSize, client.config.UnsafeZeroCopy, readBuffer); err != nil {
 			client.handleError(err)
 			return
 		}
@@ -438,15 +449,33 @@ func (server *Server) setListener(listener net.Listener) (err error) {
 
 func (server *Server) acceptClient(conn net.Conn) {
 	var client *ServerClient = server.newServerClient(conn)
-	var handler ClientHandler = server.clientHandler()
+	var reader *bufio.Reader = bufio.NewReaderSize(conn, tcpReadBufferSize(client.config.BufferSize))
+	var handler ClientHandler
+	var firstMessage []byte
+	var hasFirstMessage bool
+	var readBuffer []byte
+	var err error
 
 	defer server.removeClient(client.id)
+
+	if firstMessage, hasFirstMessage, err = client.receiveMetadataHandshake(reader, &readBuffer); err != nil {
+		server.handleError(err)
+		var _ error = client.Close()
+		return
+	}
+
+	handler = server.clientHandler()
 
 	if handler != nil {
 		handler(client)
 	}
 
-	client.readMessages()
+	if hasFirstMessage {
+		client.dispatchMessage(firstMessage)
+	}
+
+	client.readMessagesFrom(reader, &readBuffer)
+	var _ error = client.Close()
 }
 
 func (server *Server) newServerClient(conn net.Conn) (serverClient *ServerClient) {

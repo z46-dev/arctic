@@ -2,12 +2,48 @@ package implementation
 
 import (
 	"errors"
+	"net"
 	"testing"
 	"time"
 
 	"github.com/z46-dev/arctic"
 	"github.com/z46-dev/arctic/tests/util"
 )
+
+func metadataDatagram(payload string) (message []byte) {
+	var prefix []byte = []byte("\x00arctic.metadata.v1\x00")
+
+	message = make([]byte, 0, len(prefix)+len(payload))
+	message = append(message, prefix...)
+	message = append(message, payload...)
+	return
+}
+
+func assertUDPConnMessage(t testing.TB, conn net.Conn, expected string) {
+	t.Helper()
+
+	var (
+		buffer []byte = make([]byte, 1024)
+		count  int
+		err    error
+	)
+
+	if err = conn.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatalf("set udp read deadline: %v", err)
+	}
+
+	if count, err = conn.Read(buffer); err != nil {
+		t.Fatalf("read udp response: %v", err)
+	}
+
+	if err = conn.SetReadDeadline(time.Time{}); err != nil {
+		t.Fatalf("clear udp read deadline: %v", err)
+	}
+
+	if string(buffer[:count]) != expected {
+		t.Fatalf("expected %q, got %q", expected, string(buffer[:count]))
+	}
+}
 
 func TestUDPClientServerRoundTrip(t *testing.T) {
 	var (
@@ -102,6 +138,160 @@ func TestUDPClientServerRoundTrip(t *testing.T) {
 	if err = client.Close(); err != nil {
 		t.Fatalf("close udp client: %v", err)
 	}
+
+	util.CloseServer(t, server, listenDone)
+	util.AssertNoAsyncError(t, asyncErrors)
+}
+
+func TestUDPClientMetadataAvailableOnClient(t *testing.T) {
+	var (
+		server           *arctic.Server
+		client           *arctic.Client
+		err              error
+		address          string
+		listenDone       chan error
+		asyncErrors      chan error          = make(chan error, 8)
+		receivedMetadata chan map[string]any = make(chan map[string]any, 1)
+		received         chan []byte         = make(chan []byte, 1)
+	)
+
+	if server, err = arctic.NewServer(arctic.ServerConfig{
+		BindAddress: "127.0.0.1:0",
+		Protocol:    arctic.ProtocolUDP,
+		BufferSize:  1024,
+		Timeout:     time.Second,
+	}); err != nil {
+		t.Fatalf("new udp server: %v", err)
+	}
+
+	server.OnError(func(err error) {
+		asyncErrors <- err
+	})
+
+	server.OnClient(func(client *arctic.ServerClient) {
+		receivedMetadata <- client.Metadata()
+
+		client.OnMessage(func(message []byte) {
+			var err error
+
+			if err = client.Send(append([]byte("udp-meta:"), message...)); err != nil {
+				asyncErrors <- err
+			}
+		})
+	})
+
+	listenDone = util.StartServer(t, server)
+	address = util.WaitForAddress(t, server)
+
+	if client, err = arctic.NewClient(arctic.ClientConfig{
+		ServerAddress: address,
+		Protocol:      arctic.ProtocolUDP,
+		BufferSize:    1024,
+		Timeout:       time.Second,
+		Metadata: map[string]any{
+			"tenant":  "acme",
+			"attempt": 7,
+			"debug":   true,
+		},
+	}); err != nil {
+		t.Fatalf("new udp client: %v", err)
+	}
+
+	client.OnError(func(err error) {
+		asyncErrors <- err
+	})
+
+	client.OnMessage(func(message []byte) {
+		received <- append([]byte{}, message...)
+	})
+
+	if err = client.Connect(); err != nil {
+		t.Fatalf("connect udp client: %v", err)
+	}
+
+	assertMetadata(t, receivedMetadata)
+
+	if err = client.Send([]byte("ping")); err != nil {
+		t.Fatalf("send udp message: %v", err)
+	}
+
+	util.AssertMessage(t, received, "udp-meta:ping")
+
+	if err = client.Close(); err != nil {
+		t.Fatalf("close udp client: %v", err)
+	}
+
+	util.CloseServer(t, server, listenDone)
+	util.AssertNoAsyncError(t, asyncErrors)
+}
+
+func TestUDPLateMetadataUpdatesExistingClient(t *testing.T) {
+	var (
+		server      *arctic.Server
+		conn        net.Conn
+		err         error
+		address     string
+		listenDone  chan error
+		asyncErrors chan error = make(chan error, 8)
+	)
+
+	if server, err = arctic.NewServer(arctic.ServerConfig{
+		BindAddress: "127.0.0.1:0",
+		Protocol:    arctic.ProtocolUDP,
+		BufferSize:  1024,
+		Timeout:     time.Second,
+	}); err != nil {
+		t.Fatalf("new udp server: %v", err)
+	}
+
+	server.OnError(func(err error) {
+		asyncErrors <- err
+	})
+
+	server.OnClient(func(client *arctic.ServerClient) {
+		client.OnMessage(func(message []byte) {
+			var (
+				metadata map[string]any = client.Metadata()
+				tenant   string
+				err      error
+			)
+
+			if metadata != nil {
+				tenant, _ = metadata["tenant"].(string)
+			}
+
+			if err = client.Send([]byte("tenant:" + tenant + ":" + string(message))); err != nil {
+				asyncErrors <- err
+			}
+		})
+	})
+
+	listenDone = util.StartServer(t, server)
+	address = util.WaitForAddress(t, server)
+
+	if conn, err = net.Dial(string(arctic.ProtocolUDP), address); err != nil {
+		t.Fatalf("dial udp client: %v", err)
+	}
+
+	defer func() {
+		var _ error = conn.Close()
+	}()
+
+	if _, err = conn.Write([]byte("first")); err != nil {
+		t.Fatalf("send first udp message: %v", err)
+	}
+
+	assertUDPConnMessage(t, conn, "tenant::first")
+
+	if _, err = conn.Write(metadataDatagram(`{"tenant":"acme"}`)); err != nil {
+		t.Fatalf("send late udp metadata: %v", err)
+	}
+
+	if _, err = conn.Write([]byte("second")); err != nil {
+		t.Fatalf("send second udp message: %v", err)
+	}
+
+	assertUDPConnMessage(t, conn, "tenant:acme:second")
 
 	util.CloseServer(t, server, listenDone)
 	util.AssertNoAsyncError(t, asyncErrors)
@@ -307,7 +497,7 @@ func TestGobUDPClientServerRoundTrip(t *testing.T) {
 		err         error
 		address     string
 		listenDone  chan error
-		asyncErrors chan error               = make(chan error, 8)
+		asyncErrors chan error           = make(chan error, 8)
 		received    chan util.GobMessage = make(chan util.GobMessage, 1)
 	)
 
