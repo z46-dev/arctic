@@ -114,12 +114,13 @@ func validateProtocol(protocol Protocol) (err error) {
 }
 
 func newClient(config ClientConfig, conn net.Conn) (client *Client) {
-	config.Metadata = cloneMetadata(config.Metadata)
+	metadata := cloneMetadata(config.Metadata)
+	config.Metadata = metadata
 
 	client = &Client{
 		conn:     conn,
 		config:   config,
-		metadata: cloneMetadata(config.Metadata),
+		metadata: metadata,
 		ownsConn: true,
 		done:     make(chan struct{}),
 	}
