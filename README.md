@@ -14,10 +14,37 @@ A TCP/UDP client-server abstraction library written in Go
 - Graceful shutdown
 - Configurable timeouts and buffer sizes
 - Middleware support for custom processing
+- Client metadata available during `OnClient`
 - Optional unsafe zero-copy receive buffers
 
 UDP is datagram-based. Arctic tracks server-side UDP peers as virtual clients keyed by remote address. Raw UDP remains best-effort and does not add reliability, ordering, retransmits, or remote connection teardown semantics.
 Use TCP when you need reliable ordered delivery. Use UDP when you want fast best-effort datagrams and can tolerate packet loss or handle reliability at the application level.
+
+## Client Metadata
+
+Clients can attach JSON-compatible metadata to the connection. Arctic sends it as an internal open handshake, so server `OnClient` handlers can read it before normal `OnMessage` traffic starts.
+
+```go
+client, err = arctic.NewClient(arctic.ClientConfig{
+    ServerAddress: "localhost:8080",
+    Metadata: map[string]any{
+        "tenant": "acme",
+        "trace_id": "demo-123",
+        "debug": true,
+    },
+})
+```
+
+Read metadata from raw or Gob server clients with `Metadata()`:
+
+```go
+server.OnClient(func(client *arctic.ServerClient) {
+    var metadata map[string]any = client.Metadata()
+    log.Printf("client metadata: %#v", metadata)
+})
+```
+
+> Metadata values should be JSON-compatible: strings, booleans, numbers, `nil`, arrays, and objects. Numeric values are decoded as `json.Number` on the server side.
 
 ## Unsafe Zero-Copy
 
@@ -158,7 +185,7 @@ func main() {
 }
 ```
 
-See runnable examples in the `examples` directory for more usage patterns, including UDP and Gob encoding.
+See runnable examples in the `examples` directory for more usage patterns, including UDP, Gob encoding, and metadata.
 
 Or run them yourself with:
 
@@ -166,10 +193,11 @@ Or run them yourself with:
 go run github.com/z46-dev/arctic/examples/tcp_basic@latest
 go run github.com/z46-dev/arctic/examples/udp_basic@latest
 go run github.com/z46-dev/arctic/examples/gob_basic@latest
+go run github.com/z46-dev/arctic/examples/metadata_basic@latest
 ```
 
 > You can pass `-addr <address>` to override the default bind/connect address for the example. For example:
 
 ```bash
 go run github.com/z46-dev/arctic/examples/tcp_basic@latest -addr localhost:9090
-``` 
+```

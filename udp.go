@@ -30,6 +30,13 @@ func (client *Client) connectUDP() (err error) {
 	}
 
 	client.setUDPConnection(conn, nil, true, nil, nil)
+
+	if err = client.sendMetadataHandshake(); err != nil {
+		var _ error = conn.Close()
+		client.setUDPConnection(nil, nil, true, nil, nil)
+		return
+	}
+
 	go client.readUDPMessages()
 	return
 }
@@ -251,14 +258,16 @@ func (server *Server) readUDPLoop(
 	onClient udpClientHandler,
 	onMessage udpMessageHandler,
 ) (err error) {
-	var buffer []byte = make([]byte, udpReadBufferSize(server.config.BufferSize))
+	var buffer []byte = make([]byte, udpReadBufferSize(metadataBufferSize(server.config.BufferSize)))
 
 	for {
 		var (
-			count   int
-			addr    udpClientKey
-			client  *ServerClient
-			created bool
+			count      int
+			addr       udpClientKey
+			client     *ServerClient
+			created    bool
+			metadata   map[string]any
+			isMetadata bool
 		)
 
 		if count, addr, err = conn.ReadFromUDPAddrPort(buffer); err != nil {
@@ -269,6 +278,26 @@ func (server *Server) readUDPLoop(
 			}
 
 			return
+		}
+
+		client = server.udpClientSnapshot(addr)
+
+		if client == nil {
+			if metadata, isMetadata, err = decodeMetadataHandshake(buffer[:count]); err != nil {
+				server.handleError(err)
+				continue
+			}
+
+			if isMetadata {
+				client, created = server.udpClientFor(conn, addr)
+				client.setMetadata(metadata)
+
+				if created && onClient != nil {
+					onClient(client)
+				}
+
+				continue
+			}
 		}
 
 		if count > server.config.BufferSize {
@@ -340,16 +369,7 @@ func udpSocketShardCount(config ServerConfig) (count int) {
 		return
 	}
 
-	count = runtime.GOMAXPROCS(0)
-
-	if count > defaultUDPSocketShards {
-		count = defaultUDPSocketShards
-	}
-
-	if count < 1 {
-		count = 1
-	}
-
+	count = max(min(runtime.GOMAXPROCS(0), defaultUDPSocketShards), 1)
 	return
 }
 
@@ -363,6 +383,13 @@ func (server *Server) acceptUDPClient(client *ServerClient) {
 
 func (server *Server) dispatchUDPMessage(client *ServerClient, message []byte) {
 	client.dispatchMessage(message)
+}
+
+func (server *Server) udpClientSnapshot(addr udpClientKey) (serverClient *ServerClient) {
+	server.mutex.RLock()
+	serverClient = server.udpClients[addr]
+	server.mutex.RUnlock()
+	return
 }
 
 func (server *Server) udpClientFor(conn *net.UDPConn, addr udpClientKey) (serverClient *ServerClient, created bool) {
@@ -459,7 +486,11 @@ func (client *Client) setUDPConnection(
 	closeHook func(),
 ) {
 	client.mutex.Lock()
-	client.conn = conn
+	if conn == nil {
+		client.conn = nil
+	} else {
+		client.conn = conn
+	}
 	client.udpConn = conn
 	client.udpAddr = addr
 	client.udpAddrPort = udpClientKey{}

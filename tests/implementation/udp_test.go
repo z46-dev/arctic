@@ -107,6 +107,88 @@ func TestUDPClientServerRoundTrip(t *testing.T) {
 	util.AssertNoAsyncError(t, asyncErrors)
 }
 
+func TestUDPClientMetadataAvailableOnClient(t *testing.T) {
+	var (
+		server           *arctic.Server
+		client           *arctic.Client
+		err              error
+		address          string
+		listenDone       chan error
+		asyncErrors      chan error          = make(chan error, 8)
+		receivedMetadata chan map[string]any = make(chan map[string]any, 1)
+		received         chan []byte         = make(chan []byte, 1)
+	)
+
+	if server, err = arctic.NewServer(arctic.ServerConfig{
+		BindAddress: "127.0.0.1:0",
+		Protocol:    arctic.ProtocolUDP,
+		BufferSize:  1024,
+		Timeout:     time.Second,
+	}); err != nil {
+		t.Fatalf("new udp server: %v", err)
+	}
+
+	server.OnError(func(err error) {
+		asyncErrors <- err
+	})
+
+	server.OnClient(func(client *arctic.ServerClient) {
+		receivedMetadata <- client.Metadata()
+
+		client.OnMessage(func(message []byte) {
+			var err error
+
+			if err = client.Send(append([]byte("udp-meta:"), message...)); err != nil {
+				asyncErrors <- err
+			}
+		})
+	})
+
+	listenDone = util.StartServer(t, server)
+	address = util.WaitForAddress(t, server)
+
+	if client, err = arctic.NewClient(arctic.ClientConfig{
+		ServerAddress: address,
+		Protocol:      arctic.ProtocolUDP,
+		BufferSize:    1024,
+		Timeout:       time.Second,
+		Metadata: map[string]any{
+			"tenant":  "acme",
+			"attempt": 7,
+			"debug":   true,
+		},
+	}); err != nil {
+		t.Fatalf("new udp client: %v", err)
+	}
+
+	client.OnError(func(err error) {
+		asyncErrors <- err
+	})
+
+	client.OnMessage(func(message []byte) {
+		received <- append([]byte{}, message...)
+	})
+
+	if err = client.Connect(); err != nil {
+		t.Fatalf("connect udp client: %v", err)
+	}
+
+	assertMetadata(t, receivedMetadata)
+
+	if err = client.Send([]byte("ping")); err != nil {
+		t.Fatalf("send udp message: %v", err)
+	}
+
+	util.AssertMessage(t, received, "udp-meta:ping")
+
+	if err = client.Close(); err != nil {
+		t.Fatalf("close udp client: %v", err)
+	}
+
+	util.CloseServer(t, server, listenDone)
+	util.AssertNoAsyncError(t, asyncErrors)
+}
+
 func TestUDPUnsafeZeroCopyRoundTrip(t *testing.T) {
 	var (
 		server      *arctic.Server
@@ -307,7 +389,7 @@ func TestGobUDPClientServerRoundTrip(t *testing.T) {
 		err         error
 		address     string
 		listenDone  chan error
-		asyncErrors chan error               = make(chan error, 8)
+		asyncErrors chan error           = make(chan error, 8)
 		received    chan util.GobMessage = make(chan util.GobMessage, 1)
 	)
 

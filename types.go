@@ -15,6 +15,7 @@ var (
 	ErrClientNotConnected        error           = errors.New("arctic: client is not connected")
 	ErrServerAlreadyListening    error           = errors.New("arctic: server is already listening")
 	ErrMessageTooLarge           error           = errors.New("arctic: message exceeds configured buffer size")
+	ErrMetadataInvalid           error           = errors.New("arctic: metadata is invalid")
 	ErrGobTypeInvalid            error           = errors.New("arctic: gob message type must be a struct")
 	ErrGobTypeNotRegistered      error           = errors.New("arctic: gob message type is not registered")
 	ErrGobTypeRegistrationFailed error           = errors.New("arctic: gob message type registration failed")
@@ -37,6 +38,7 @@ type (
 		BufferSize     int
 		Timeout        time.Duration
 		UnsafeZeroCopy bool
+		Metadata       map[string]any
 	}
 
 	ServerConfig struct {
@@ -65,6 +67,7 @@ type (
 		udpAddr     *net.UDPAddr
 		udpAddrPort udpClientKey
 		config      ClientConfig
+		metadata    map[string]any
 		onMessage   MessageHandler
 		onClose     CloseHandler
 		onError     ErrorHandler

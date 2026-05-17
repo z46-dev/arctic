@@ -27,6 +27,13 @@ func (client *GobClient[MessageType]) Connect() (err error) {
 	}
 
 	client.setConnection(conn)
+
+	if err = client.Client.sendMetadataHandshake(); err != nil {
+		var _ error = conn.Close()
+		client.setConnection(nil)
+		return
+	}
+
 	client.setCodec(conn)
 	go client.readMessages()
 	return
@@ -202,6 +209,8 @@ func (client *GobClient[MessageType]) messagePipeline() (handler GobMessageHandl
 
 func (server *GobServer[MessageType]) acceptClient(conn net.Conn) {
 	var raw *ServerClient = server.Server.newServerClient(conn)
+	var err error
+	var handler GobClientHandler[MessageType]
 	var client *GobServerClient[MessageType] = &GobServerClient[MessageType]{
 		id: raw.id,
 		GobClient: &GobClient[MessageType]{
@@ -210,10 +219,18 @@ func (server *GobServer[MessageType]) acceptClient(conn net.Conn) {
 			decoder: gob.NewDecoder(conn),
 		},
 	}
-	var handler GobClientHandler[MessageType] = server.clientHandler()
+
+	defer server.Server.removeClient(client.id)
+
+	if _, _, err = raw.Client.receiveMetadataHandshake(conn); err != nil {
+		server.Server.handleError(err)
+		var _ error = raw.Client.Close()
+		return
+	}
+
+	handler = server.clientHandler()
 
 	server.addClient(client)
-	defer server.Server.removeClient(client.id)
 	defer server.removeClient(client.id)
 
 	if handler != nil {
