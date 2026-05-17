@@ -159,3 +159,17 @@ func main() {
 ```
 
 See runnable examples in the `examples` directory for more usage patterns, including UDP and Gob encoding.
+
+Or run them yourself with:
+
+```bash
+go run github.com/z46-dev/arctic/examples/tcp_basic@latest
+go run github.com/z46-dev/arctic/examples/udp_basic@latest
+go run github.com/z46-dev/arctic/examples/gob_basic@latest
+```
+
+> You can pass `-addr <address>` to override the default bind/connect address for the example. For example:
+
+```bash
+go run github.com/z46-dev/arctic/examples/tcp_basic@latest -addr localhost:9090
+``` 
