@@ -48,6 +48,8 @@ server.OnClient(func(client *arctic.ServerClient) {
 
 > UDP metadata is best-effort. Arctic sends it as an initial datagram, but UDP can drop or reorder datagrams, so a UDP `OnClient` handler may run before metadata is available. If a valid metadata datagram arrives later, Arctic stores it for future `Metadata()` calls, but `OnClient` is not called again.
 
+> Arctic reserves the `\x00arctic.metadata.v1\x00` prefix for its metadata handshake. Any first TCP frame or first UDP datagram beginning with that prefix is treated as metadata, not application data, and is rejected if the remaining bytes are not valid JSON. If you send arbitrary binary payloads, ensure the first message/datagram does not start with this reserved prefix unless you intend to send metadata.
+
 ## Unsafe Zero-Copy
 
 By default, Arctic gives each `OnMessage` call a safe message slice that can be retained after the handler returns. Set `UnsafeZeroCopy: true` on `ClientConfig` or `ServerConfig` to reduce receive-side allocations by reusing internal read buffers.
