@@ -116,11 +116,13 @@ type (
 
 	GobClient[MessageType any] struct {
 		*Client
-		encoder    *gob.Encoder
-		decoder    *gob.Decoder
-		onMessage  GobMessageHandler[MessageType]
-		middleware []GobMiddleware[MessageType]
-		mutex      sync.RWMutex
+		encoder       *gob.Encoder
+		decoder       *gob.Decoder
+		udpGobEncoder *gobDatagramEncoder
+		onMessage     GobMessageHandler[MessageType]
+		middleware    []GobMiddleware[MessageType]
+		mutex         sync.RWMutex
+		udpGobMutex   sync.Mutex
 	}
 
 	GobServerClient[MessageType any] struct {
@@ -138,6 +140,23 @@ type (
 	gobTypeRegistry struct {
 		mutex      sync.RWMutex
 		registered map[reflect.Type]struct{}
+	}
+
+	gobDatagramChunk struct {
+		start int
+	}
+
+	gobDatagramWriter struct {
+		data   []byte
+		chunks []gobDatagramChunk
+	}
+
+	gobDatagramEncoder struct {
+		encoder *gob.Encoder
+		writer  gobDatagramWriter
+		// Cached descriptors keep UDP datagrams self-contained without rebuilding type metadata.
+		descriptorPrefix []byte
+		sendBuffer       []byte
 	}
 
 	udpClientKey = netip.AddrPort

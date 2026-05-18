@@ -55,22 +55,20 @@ func (client *GobClient[MessageType]) Send(message MessageType) (err error) {
 		return
 	}
 
+	if !hasDeadline {
+		err = client.encodeGobMessage(encoder, message)
+		return
+	}
+
 	client.writeMutex.Lock()
 	defer client.writeMutex.Unlock()
 
-	if hasDeadline {
-		if err = applyWriteDeadline(conn, client.config.Timeout); err != nil {
-			return
-		}
+	if err = applyWriteDeadline(conn, client.config.Timeout); err != nil {
+		return
 	}
 
-	if err = encoder.Encode(message); err != nil {
-		client.handleError(err)
-	}
-
-	if hasDeadline {
-		clearWriteDeadline(conn)
-	}
+	err = client.encodeGobMessage(encoder, message)
+	clearWriteDeadline(conn)
 
 	return
 }
@@ -85,6 +83,17 @@ func (client *GobClient[MessageType]) Use(middleware ...GobMiddleware[MessageTyp
 	client.mutex.Lock()
 	client.middleware = append(client.middleware, middleware...)
 	client.mutex.Unlock()
+}
+
+func (client *GobClient[MessageType]) encodeGobMessage(
+	encoder *gob.Encoder,
+	message MessageType,
+) (err error) {
+	if err = encoder.Encode(message); err != nil {
+		client.handleError(err)
+	}
+
+	return
 }
 
 func (serverClient *GobServerClient[MessageType]) ID() (id int) {
@@ -289,7 +298,14 @@ func (client *GobClient[MessageType]) connectUDPGob() (err error) {
 func (client *GobClient[MessageType]) sendUDPGob(message MessageType) (err error) {
 	var encoded []byte
 
-	if encoded, err = encodeGobDatagram(message); err != nil {
+	client.udpGobMutex.Lock()
+	defer client.udpGobMutex.Unlock()
+
+	if client.udpGobEncoder == nil {
+		client.udpGobEncoder = newGobDatagramEncoder()
+	}
+
+	if encoded, err = client.udpGobEncoder.Encode(message); err != nil {
 		client.handleError(err)
 		return
 	}
@@ -341,18 +357,66 @@ func (server *GobServer[MessageType]) gobClientFor(raw *ServerClient) (client *G
 	return
 }
 
-func encodeGobDatagram[MessageType any](message MessageType) (data []byte, err error) {
-	var buffer bytes.Buffer
-
-	if err = gob.NewEncoder(&buffer).Encode(message); err != nil {
-		return
-	}
-
-	data = buffer.Bytes()
-	return
-}
-
 func decodeGobDatagram[MessageType any](data []byte) (message MessageType, err error) {
 	err = gob.NewDecoder(bytes.NewReader(data)).Decode(&message)
 	return
+}
+
+func newGobDatagramEncoder() (encoder *gobDatagramEncoder) {
+	encoder = &gobDatagramEncoder{}
+	encoder.encoder = gob.NewEncoder(&encoder.writer)
+	return
+}
+
+func (encoder *gobDatagramEncoder) Encode(message any) (data []byte, err error) {
+	encoder.writer.Reset()
+
+	if err = encoder.encoder.Encode(message); err != nil {
+		return
+	}
+
+	data = encoder.datagram()
+	return
+}
+
+func (encoder *gobDatagramEncoder) datagram() (data []byte) {
+	var (
+		descriptorEnd int
+		oldPrefix     []byte = encoder.descriptorPrefix
+	)
+
+	if len(encoder.writer.chunks) > 1 {
+		descriptorEnd = encoder.writer.chunks[len(encoder.writer.chunks)-1].start
+	}
+
+	if len(oldPrefix) == 0 {
+		data = encoder.writer.data
+	} else {
+		encoder.sendBuffer = append(encoder.sendBuffer[:0], oldPrefix...)
+		encoder.sendBuffer = append(encoder.sendBuffer, encoder.writer.data...)
+		data = encoder.sendBuffer
+	}
+
+	if descriptorEnd > 0 {
+		encoder.descriptorPrefix = append(encoder.descriptorPrefix, encoder.writer.data[:descriptorEnd]...)
+	}
+
+	return
+}
+
+func (writer *gobDatagramWriter) Write(data []byte) (written int, err error) {
+	var start int = len(writer.data)
+
+	writer.data = append(writer.data, data...)
+	writer.chunks = append(writer.chunks, gobDatagramChunk{
+		start: start,
+	})
+
+	written = len(data)
+	return
+}
+
+func (writer *gobDatagramWriter) Reset() {
+	writer.data = writer.data[:0]
+	writer.chunks = writer.chunks[:0]
 }

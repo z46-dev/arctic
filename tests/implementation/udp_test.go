@@ -576,6 +576,26 @@ func TestGobUDPClientServerRoundTrip(t *testing.T) {
 		t.Fatal("timed out waiting for gob udp response")
 	}
 
+	if err = client.Send(util.GobMessage{Text: "pong", Count: 99}); err != nil {
+		t.Fatalf("send second gob udp message: %v", err)
+	}
+
+	select {
+	case message := <-received:
+		var expected util.GobMessage = util.GobMessage{
+			Text:  "udp:pong",
+			Count: 100,
+		}
+
+		if message != expected {
+			t.Fatalf("expected %#v, got %#v", expected, message)
+		}
+	case err = <-asyncErrors:
+		t.Fatalf("async error: %v", err)
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for second gob udp response")
+	}
+
 	if err = client.Close(); err != nil {
 		t.Fatalf("close gob udp client: %v", err)
 	}
