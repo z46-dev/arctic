@@ -13,6 +13,7 @@ import (
 
 var metadataHandshakePrefix []byte = []byte("\x00arctic.metadata.v1\x00")
 
+// Metadata returns an isolated snapshot of the connection metadata.
 func (client *Client) Metadata() (metadata map[string]any) {
 	metadata = client.metadataSnapshot()
 	return

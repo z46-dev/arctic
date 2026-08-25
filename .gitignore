@@ -17,6 +17,9 @@ coverage.*
 *.coverprofile
 profile.cov
 
+# Generated browser example
+/examples/websocket_browser/client.wasm
+
 # Dependency directories (remove the comment below to include it)
 # vendor/
 

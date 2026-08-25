@@ -6,6 +6,7 @@ import (
 	"reflect"
 )
 
+// RegisterGobType registers a struct type for Arctic Gob clients and servers.
 func RegisterGobType[MessageType any](sample MessageType) (err error) {
 	var messageType reflect.Type = reflect.TypeOf(sample)
 
@@ -25,6 +26,7 @@ func RegisterGobType[MessageType any](sample MessageType) (err error) {
 	return
 }
 
+// IsGobTypeRegistered reports whether a Gob message type is registered.
 func IsGobTypeRegistered[MessageType any]() (registered bool) {
 	registered = gobTypes.has(typeOf[MessageType]())
 	return

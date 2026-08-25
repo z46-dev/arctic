@@ -11,10 +11,12 @@ import (
 	"github.com/z46-dev/arctic/tests/util"
 )
 
-type zeroCopyBenchMode struct {
-	name    string
-	enabled bool
-}
+type (
+	zeroCopyBenchMode struct {
+		name    string
+		enabled bool
+	}
+)
 
 func BenchmarkTCPRoundTrip(b *testing.B) {
 	var payload []byte = []byte("ping")

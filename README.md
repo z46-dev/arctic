@@ -8,6 +8,8 @@ A TCP/UDP client-server abstraction library written in Go
 ## Features
 
 - TCP and UDP support
+- Native and browser WebSocket clients
+- WebSocket server sidecars with shared connection handlers and lifecycle
 - Event-driven architecture
 - Connection management
 - Optional Gob encoding/decoding
@@ -19,6 +21,53 @@ A TCP/UDP client-server abstraction library written in Go
 
 UDP is datagram-based. Arctic tracks server-side UDP peers as virtual clients keyed by remote address. Raw UDP remains best-effort and does not add reliability, ordering, retransmits, or remote connection teardown semantics.
 Use TCP when you need reliable ordered delivery. Use UDP when you want fast best-effort datagrams and can tolerate packet loss or handle reliability at the application level.
+
+## WebSocket Sidecars
+
+A WebSocket sidecar lets browser and native WebSocket clients use the same handlers as the primary TCP or UDP server. The sidecar has its own TCP listener; a UDP primary may use the same numeric port because TCP and UDP have separate port namespaces.
+
+```go
+server, err := arctic.NewServer(arctic.ServerConfig{
+    BindAddress: ":8080",
+    Protocol: arctic.ProtocolTCP,
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+sidecar, err := arctic.NewWebSocketServer(arctic.WebSocketServerConfig{
+    BindAddress: ":8081",
+    Path: "/arctic",
+    OriginPatterns: []string{"example.com"},
+})
+if err != nil {
+    log.Fatal(err)
+}
+if err = server.AddWebSocketSidecar(sidecar); err != nil {
+    log.Fatal(err)
+}
+
+server.OnClient(func(client *arctic.ServerClient) {
+    client.OnMessage(func(message []byte) {
+        _ = client.Send(message)
+    })
+})
+
+if err = server.Listen(); err != nil {
+    log.Fatal(err)
+}
+```
+
+The same client API works in native Go and in `GOOS=js GOARCH=wasm` browser builds:
+
+```go
+client, err := arctic.NewClient(arctic.ClientConfig{
+    ServerAddress: "wss://example.com/arctic",
+    Protocol: arctic.ProtocolWebSocket,
+})
+```
+
+Starting the primary listener and its sidecars is transactional: if an endpoint cannot be bound, listeners already started for that server are closed and `Listen` returns an error wrapping `ErrEndpointInUse` when the operating system reports a port collision. Closing the primary server closes its sidecars and all clients.
 
 ## Client Metadata
 
@@ -198,7 +247,10 @@ go run github.com/z46-dev/arctic/examples/tcp_basic@latest
 go run github.com/z46-dev/arctic/examples/udp_basic@latest
 go run github.com/z46-dev/arctic/examples/gob_basic@latest
 go run github.com/z46-dev/arctic/examples/metadata_basic@latest
+go run github.com/z46-dev/arctic/examples/websocket_native@latest
 ```
+
+The browser WebSocket example includes a Go WASM client and a page that loads it. See [`examples/websocket_browser`](examples/websocket_browser/README.md) for build and browser instructions.
 
 > You can pass `-addr <address>` to override the default bind/connect address for the example. For example:
 

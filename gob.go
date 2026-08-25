@@ -7,6 +7,7 @@ import (
 	"net"
 )
 
+// Connect opens the typed client's transport and starts decoding messages.
 func (client *GobClient[MessageType]) Connect() (err error) {
 	var conn net.Conn
 
@@ -23,7 +24,11 @@ func (client *GobClient[MessageType]) Connect() (err error) {
 		return
 	}
 
-	if conn, err = dialTCP(client.config); err != nil {
+	if client.config.Protocol == ProtocolWebSocket {
+		if conn, err = dialWebSocket(client.config); err != nil {
+			return
+		}
+	} else if conn, err = dialTCP(client.config); err != nil {
 		return
 	}
 
@@ -40,6 +45,7 @@ func (client *GobClient[MessageType]) Connect() (err error) {
 	return
 }
 
+// Send encodes and transmits one typed message.
 func (client *GobClient[MessageType]) Send(message MessageType) (err error) {
 	var conn net.Conn = client.connection()
 	var encoder *gob.Encoder = client.encoderSnapshot()
@@ -73,12 +79,14 @@ func (client *GobClient[MessageType]) Send(message MessageType) (err error) {
 	return
 }
 
+// OnMessage sets the typed message handler.
 func (client *GobClient[MessageType]) OnMessage(handler GobMessageHandler[MessageType]) {
 	client.mutex.Lock()
 	client.onMessage = handler
 	client.mutex.Unlock()
 }
 
+// Use appends middleware to the typed message pipeline.
 func (client *GobClient[MessageType]) Use(middleware ...GobMiddleware[MessageType]) {
 	client.mutex.Lock()
 	client.middleware = append(client.middleware, middleware...)
@@ -96,27 +104,37 @@ func (client *GobClient[MessageType]) encodeGobMessage(
 	return
 }
 
+// ID returns the server-assigned typed client identifier.
 func (serverClient *GobServerClient[MessageType]) ID() (id int) {
 	id = serverClient.id
 	return
 }
 
+// Listen starts the typed server and every attached sidecar.
 func (server *GobServer[MessageType]) Listen() (err error) {
 	if server.config.Protocol == ProtocolUDP {
-		err = server.Server.listenUDP(server.acceptUDPClient, server.dispatchUDPMessage)
+		err = server.Server.listenWithSidecars(
+			func(conn net.Conn) { server.acceptClientWithProtocol(conn, ProtocolWebSocket) },
+			func() error { return server.Server.listenUDP(server.acceptUDPClient, server.dispatchUDPMessage) },
+		)
 		return
 	}
 
-	err = server.Server.listenTCP(server.acceptClient)
+	err = server.Server.listenWithSidecars(
+		func(conn net.Conn) { server.acceptClientWithProtocol(conn, ProtocolWebSocket) },
+		func() error { return server.Server.listenTCP(server.acceptClient) },
+	)
 	return
 }
 
+// Close stops the typed server and clears its client registry.
 func (server *GobServer[MessageType]) Close() (err error) {
 	err = server.Server.Close()
 	server.clearClients()
 	return
 }
 
+// OnClient sets the handler invoked for typed clients.
 func (server *GobServer[MessageType]) OnClient(handler GobClientHandler[MessageType]) {
 	server.mutex.Lock()
 	server.onClient = handler
@@ -218,7 +236,11 @@ func (client *GobClient[MessageType]) messagePipeline() (handler GobMessageHandl
 }
 
 func (server *GobServer[MessageType]) acceptClient(conn net.Conn) {
-	var raw *ServerClient = server.Server.newServerClient(conn)
+	server.acceptClientWithProtocol(conn, ProtocolTCP)
+}
+
+func (server *GobServer[MessageType]) acceptClientWithProtocol(conn net.Conn, protocol Protocol) {
+	var raw *ServerClient = server.Server.newServerClientWithProtocol(conn, protocol)
 	var reader *bufio.Reader = bufio.NewReaderSize(conn, tcpReadBufferSize(raw.config.BufferSize))
 	var err error
 	var handler GobClientHandler[MessageType]

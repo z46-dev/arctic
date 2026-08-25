@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Arctic WebSocket WASM example</title>
+    <style>
+        body {
+            font: 18px/1.5 system-ui, sans-serif;
+            max-width: 42rem;
+            margin: 5rem auto;
+            padding: 0 1.5rem;
+        }
+
+        .status {
+            padding: 1rem;
+            border-radius: .5rem;
+            background: #eef6ff;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>Arctic in the browser</h1>
+    <p id="status" class="status" role="status" aria-live="polite">Loading WebAssembly...</p>
+    <script src="./wasm_exec.js"></script>
+    <script>
+        const go = new Go();
+        WebAssembly.instantiateStreaming(fetch("/client.wasm"), go.importObject)
+            .then(result => go.run(result.instance))
+            .catch(error => {
+                document.getElementById("status").textContent = `WASM startup failed: ${error}`;
+            });
+    </script>
+</body>
+
+</html>

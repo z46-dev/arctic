@@ -12,6 +12,7 @@ import (
 
 const tcpBufferedFramePayloadSize int = defaultBufferSize
 
+// Connect opens the client's configured transport and starts receiving messages.
 func (client *Client) Connect() (err error) {
 	var conn net.Conn
 
@@ -24,7 +25,11 @@ func (client *Client) Connect() (err error) {
 		return
 	}
 
-	if conn, err = dialTCP(client.config); err != nil {
+	if client.config.Protocol == ProtocolWebSocket {
+		if conn, err = dialWebSocket(client.config); err != nil {
+			return
+		}
+	} else if conn, err = dialTCP(client.config); err != nil {
 		return
 	}
 
@@ -40,6 +45,7 @@ func (client *Client) Connect() (err error) {
 	return
 }
 
+// Send transmits one raw message to the remote peer.
 func (client *Client) Send(message []byte) (err error) {
 	var conn net.Conn
 
@@ -81,6 +87,7 @@ func (client *Client) Send(message []byte) (err error) {
 	return
 }
 
+// Close releases the client connection and invokes its close handler once.
 func (client *Client) Close() (err error) {
 	var closeErr error
 
@@ -116,30 +123,35 @@ func (client *Client) Close() (err error) {
 	return
 }
 
+// OnMessage sets the client's raw message handler.
 func (client *Client) OnMessage(handler MessageHandler) {
 	client.mutex.Lock()
 	client.onMessage = handler
 	client.mutex.Unlock()
 }
 
+// OnClose sets the client's close handler.
 func (client *Client) OnClose(handler CloseHandler) {
 	client.mutex.Lock()
 	client.onClose = handler
 	client.mutex.Unlock()
 }
 
+// OnError sets the client's asynchronous error handler.
 func (client *Client) OnError(handler ErrorHandler) {
 	client.mutex.Lock()
 	client.onError = handler
 	client.mutex.Unlock()
 }
 
+// Use appends middleware to the client's raw message pipeline.
 func (client *Client) Use(middleware ...Middleware) {
 	client.mutex.Lock()
 	client.middleware = append(client.middleware, middleware...)
 	client.mutex.Unlock()
 }
 
+// RemoteAddr returns the remote transport address when connected.
 func (client *Client) RemoteAddr() (addr net.Addr) {
 	var conn net.Conn = client.connection()
 	var udpAddr *net.UDPAddr = client.udpRemoteAddr()
@@ -153,6 +165,7 @@ func (client *Client) RemoteAddr() (addr net.Addr) {
 	return
 }
 
+// LocalAddr returns the local transport address when connected.
 func (client *Client) LocalAddr() (addr net.Addr) {
 	var conn net.Conn = client.connection()
 	var udpConn *net.UDPConn = client.udpConnection()
@@ -166,21 +179,30 @@ func (client *Client) LocalAddr() (addr net.Addr) {
 	return
 }
 
+// ID returns the server-assigned client identifier.
 func (serverClient *ServerClient) ID() (id int) {
 	id = serverClient.id
 	return
 }
 
+// Listen starts the primary listener and every attached sidecar.
 func (server *Server) Listen() (err error) {
 	if server.config.Protocol == ProtocolUDP {
-		err = server.listenUDP(server.acceptUDPClient, server.dispatchUDPMessage)
+		err = server.listenWithSidecars(
+			func(conn net.Conn) { server.acceptClientWithProtocol(conn, ProtocolWebSocket) },
+			func() error { return server.listenUDP(server.acceptUDPClient, server.dispatchUDPMessage) },
+		)
 		return
 	}
 
-	err = server.listenTCP(server.acceptClient)
+	err = server.listenWithSidecars(
+		func(conn net.Conn) { server.acceptClientWithProtocol(conn, ProtocolWebSocket) },
+		func() error { return server.listenTCP(server.acceptClient) },
+	)
 	return
 }
 
+// Close stops all listeners and connected clients.
 func (server *Server) Close() (err error) {
 	var closeErr error
 
@@ -189,6 +211,7 @@ func (server *Server) Close() (err error) {
 		var listener net.Listener
 		var udpConns []*net.UDPConn
 		var handler CloseHandler
+		var sidecars []*WebSocketServer
 
 		server.mutex.Lock()
 		listener = server.listener
@@ -198,6 +221,7 @@ func (server *Server) Close() (err error) {
 		server.udpConns = nil
 		handler = server.onClose
 		clients = make([]*ServerClient, 0, len(server.clients))
+		sidecars = append([]*WebSocketServer{}, server.webSocketSidecars...)
 
 		for _, client := range server.clients {
 			clients = append(clients, client)
@@ -205,6 +229,12 @@ func (server *Server) Close() (err error) {
 
 		close(server.done)
 		server.mutex.Unlock()
+
+		for _, sidecar := range sidecars {
+			if sidecarErr := sidecar.close(); closeErr == nil && sidecarErr != nil {
+				closeErr = sidecarErr
+			}
+		}
 
 		if listener != nil {
 			closeErr = listener.Close()
@@ -239,24 +269,97 @@ func (server *Server) Close() (err error) {
 	return
 }
 
+func (server *Server) listenWithSidecars(webSocketAccept func(net.Conn), listen func() error) (err error) {
+	var started []*WebSocketServer
+
+	server.mutex.Lock()
+	if server.listening {
+		server.mutex.Unlock()
+		return ErrServerAlreadyListening
+	}
+	server.listening = true
+	server.listenErr = nil
+	var sidecars []*WebSocketServer = append([]*WebSocketServer{}, server.webSocketSidecars...)
+	server.mutex.Unlock()
+
+	for _, sidecar := range sidecars {
+		if err = sidecar.start(server, webSocketAccept); err != nil {
+			for _, active := range started {
+				_ = active.close()
+			}
+			server.setNotListening()
+			return
+		}
+		started = append(started, sidecar)
+	}
+
+	err = listen()
+	if err != nil {
+		var bound bool = server.hasBoundListener()
+		for _, active := range started {
+			_ = active.close()
+		}
+		if bound {
+			_ = server.Close()
+		} else {
+			server.setNotListening()
+		}
+		return
+	}
+	err = server.listenerError()
+	return
+}
+
+func (server *Server) hasBoundListener() (bound bool) {
+	server.mutex.RLock()
+	bound = server.listener != nil || len(server.udpConns) > 0
+	server.mutex.RUnlock()
+	return
+}
+
+func (server *Server) setNotListening() {
+	server.mutex.Lock()
+	server.listening = false
+	server.mutex.Unlock()
+}
+
+func (server *Server) setListenerError(err error) {
+	server.mutex.Lock()
+	if server.listenErr == nil {
+		server.listenErr = err
+	}
+	server.mutex.Unlock()
+}
+
+func (server *Server) listenerError() (err error) {
+	server.mutex.RLock()
+	err = server.listenErr
+	server.mutex.RUnlock()
+	return
+}
+
+// OnClient sets the handler invoked for newly discovered clients.
 func (server *Server) OnClient(handler ClientHandler) {
 	server.mutex.Lock()
 	server.onClient = handler
 	server.mutex.Unlock()
 }
 
+// OnClose sets the server shutdown handler.
 func (server *Server) OnClose(handler CloseHandler) {
 	server.mutex.Lock()
 	server.onClose = handler
 	server.mutex.Unlock()
 }
 
+// OnError sets the server's asynchronous error handler.
 func (server *Server) OnError(handler ErrorHandler) {
 	server.mutex.Lock()
 	server.onError = handler
 	server.mutex.Unlock()
 }
 
+// Addr returns the primary listener's bound address.
 func (server *Server) Addr() (addr net.Addr) {
 	server.mutex.RLock()
 
@@ -398,12 +501,18 @@ func (client *Client) handleError(err error) {
 
 func (server *Server) listenTCP(accept func(net.Conn)) (err error) {
 	var listener net.Listener
+	var release func()
 
-	if err = validateProtocol(server.config.Protocol); err != nil {
+	if err = validateServerProtocol(server.config.Protocol); err != nil {
 		return
 	}
+	if release, err = reserveEndpoint("tcp", server.config.BindAddress); err != nil {
+		return
+	}
+	defer release()
 
 	if listener, err = net.Listen(string(server.config.Protocol), server.config.BindAddress); err != nil {
+		err = endpointListenError(string(server.config.Protocol), server.config.BindAddress, err)
 		return
 	}
 
@@ -448,7 +557,11 @@ func (server *Server) setListener(listener net.Listener) (err error) {
 }
 
 func (server *Server) acceptClient(conn net.Conn) {
-	var client *ServerClient = server.newServerClient(conn)
+	server.acceptClientWithProtocol(conn, ProtocolTCP)
+}
+
+func (server *Server) acceptClientWithProtocol(conn net.Conn, protocol Protocol) {
+	var client *ServerClient = server.newServerClientWithProtocol(conn, protocol)
 	var reader *bufio.Reader = bufio.NewReaderSize(conn, tcpReadBufferSize(client.config.BufferSize))
 	var handler ClientHandler
 	var firstMessage []byte
@@ -479,7 +592,12 @@ func (server *Server) acceptClient(conn net.Conn) {
 }
 
 func (server *Server) newServerClient(conn net.Conn) (serverClient *ServerClient) {
+	return server.newServerClientWithProtocol(conn, server.config.Protocol)
+}
+
+func (server *Server) newServerClientWithProtocol(conn net.Conn, protocol Protocol) (serverClient *ServerClient) {
 	var config ClientConfig = clientConfigFromServer(server.config)
+	config.Protocol = protocol
 
 	server.mutex.Lock()
 	server.clientIDAccumulator++

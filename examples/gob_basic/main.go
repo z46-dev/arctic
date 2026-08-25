@@ -11,10 +11,12 @@ import (
 
 var flagAddr *string = flag.String("addr", "[::]:8080", "Address for the server to bind to (e.g., [::1]:8080)")
 
-type Message struct {
-	Text   string
-	Number int
-}
+type (
+	Message struct {
+		Text   string
+		Number int
+	}
+)
 
 func server() {
 	var (

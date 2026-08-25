@@ -11,6 +11,7 @@ const (
 	defaultUDPSocketShards int = 8
 )
 
+// NewClient creates a raw client for the configured transport.
 func NewClient(config ClientConfig) (client *Client, err error) {
 	config = normalizeClientConfig(config)
 
@@ -22,10 +23,11 @@ func NewClient(config ClientConfig) (client *Client, err error) {
 	return
 }
 
+// NewServer creates a TCP or UDP server.
 func NewServer(config ServerConfig) (server *Server, err error) {
 	config = normalizeServerConfig(config)
 
-	if err = validateProtocol(config.Protocol); err != nil {
+	if err = validateServerProtocol(config.Protocol); err != nil {
 		return
 	}
 
@@ -39,6 +41,14 @@ func NewServer(config ServerConfig) (server *Server, err error) {
 	return
 }
 
+func validateServerProtocol(protocol Protocol) (err error) {
+	if protocol != ProtocolTCP && protocol != ProtocolUDP {
+		err = fmt.Errorf("%w: %s", ErrProtocolUnsupported, protocol)
+	}
+	return
+}
+
+// NewGobClient creates a typed Gob client for the configured transport.
 func NewGobClient[MessageType any](config ClientConfig) (client *GobClient[MessageType], err error) {
 	var raw *Client
 
@@ -57,6 +67,7 @@ func NewGobClient[MessageType any](config ClientConfig) (client *GobClient[Messa
 	return
 }
 
+// NewGobServer creates a typed Gob server.
 func NewGobServer[MessageType any](config ServerConfig) (server *GobServer[MessageType], err error) {
 	var raw *Server
 
@@ -105,7 +116,7 @@ func normalizeServerConfig(config ServerConfig) (normalized ServerConfig) {
 }
 
 func validateProtocol(protocol Protocol) (err error) {
-	if protocol != ProtocolTCP && protocol != ProtocolUDP {
+	if protocol != ProtocolTCP && protocol != ProtocolUDP && protocol != ProtocolWebSocket {
 		err = fmt.Errorf("%w: %s", ErrProtocolUnsupported, protocol)
 		return
 	}
@@ -114,7 +125,7 @@ func validateProtocol(protocol Protocol) (err error) {
 }
 
 func newClient(config ClientConfig, conn net.Conn) (client *Client) {
-	metadata := cloneMetadata(config.Metadata)
+	var metadata map[string]any = cloneMetadata(config.Metadata)
 	config.Metadata = metadata
 
 	client = &Client{

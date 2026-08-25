@@ -145,6 +145,12 @@ func (client *Client) readUDPMessages() {
 
 func (server *Server) listenUDP(onClient udpClientHandler, onMessage udpMessageHandler) (err error) {
 	var conns []*net.UDPConn
+	var release func()
+
+	if release, err = reserveEndpoint("udp", server.config.BindAddress); err != nil {
+		return
+	}
+	defer release()
 
 	if conns, err = listenUDPConns(server.config); err != nil {
 		return
@@ -215,6 +221,7 @@ func listenUDPConn(address string, reusePort bool) (conn *net.UDPConn, err error
 	}
 
 	if packetConn, err = listenConfig.ListenPacket(context.Background(), string(ProtocolUDP), address); err != nil {
+		err = endpointListenError(string(ProtocolUDP), address, err)
 		return
 	}
 

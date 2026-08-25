@@ -14,6 +14,8 @@ var (
 	ErrProtocolUnsupported       error           = errors.New("arctic: protocol is not supported")
 	ErrClientNotConnected        error           = errors.New("arctic: client is not connected")
 	ErrServerAlreadyListening    error           = errors.New("arctic: server is already listening")
+	ErrEndpointInUse             error           = errors.New("arctic: endpoint is already in use")
+	ErrSidecarAlreadyAttached    error           = errors.New("arctic: websocket sidecar is already attached")
 	ErrMessageTooLarge           error           = errors.New("arctic: message exceeds configured buffer size")
 	ErrMetadataInvalid           error           = errors.New("arctic: metadata is invalid")
 	ErrGobTypeInvalid            error           = errors.New("arctic: gob message type must be a struct")
@@ -25,8 +27,9 @@ var (
 )
 
 const (
-	ProtocolTCP Protocol = "tcp"
-	ProtocolUDP Protocol = "udp"
+	ProtocolTCP       Protocol = "tcp"
+	ProtocolUDP       Protocol = "udp"
+	ProtocolWebSocket Protocol = "websocket"
 )
 
 type (
@@ -47,6 +50,13 @@ type (
 		BufferSize     int
 		Timeout        time.Duration
 		UnsafeZeroCopy bool
+	}
+
+	WebSocketServerConfig struct {
+		BindAddress    string
+		Path           string
+		OriginPatterns []string
+		Timeout        time.Duration
 	}
 
 	MessageHandler func([]byte)
@@ -102,6 +112,18 @@ type (
 		udpWriter           sync.Mutex
 		closeOnce           sync.Once
 		done                chan struct{}
+		webSocketSidecars   []*WebSocketServer
+		listening           bool
+		listenErr           error
+	}
+
+	WebSocketServer struct {
+		config   WebSocketServerConfig
+		server   any
+		listener net.Listener
+		parent   *Server
+		release  func()
+		mutex    sync.RWMutex
 	}
 
 	GobMessageHandler[MessageType any] func(MessageType)
