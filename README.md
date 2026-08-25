@@ -1,4 +1,4 @@
-![Tests](https://img.shields.io/github/actions/workflow/status/z46-dev/arctic/tests.yml?branch=main&event=push&label=Tests&job=run-tests)
+![Tests](https://img.shields.io/github/actions/workflow/status/z46-dev/arctic/ci.yml?branch=main&event=push&label=CI)
 ![Made with Golang](https://img.shields.io/badge/-Made_with_Golang-007d9c?logo=go&logoColor=white)
 
 # arctic
