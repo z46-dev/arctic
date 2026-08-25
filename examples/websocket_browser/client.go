@@ -40,7 +40,7 @@ func main() {
 	client.OnError(func(err error) {
 		setStatus(fmt.Sprintf("WebSocket error: %v", err))
 	})
-	
+
 	client.OnClose(func() {
 		setStatus("Connection closed")
 	})

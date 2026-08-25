@@ -72,18 +72,18 @@ func main() {
 	}); err != nil {
 		log.Fatal(err)
 	}
-	
+
 	defer client.Close()
 
 	client.OnMessage(func(message []byte) {
 		log.Printf("native client received: %s", message)
 		close(received)
 	})
-	
+
 	if err = client.Connect(); err != nil {
 		log.Fatal(err)
 	}
-	
+
 	if err = client.Send([]byte("Hello from the native WebSocket client")); err != nil {
 		log.Fatal(err)
 	}

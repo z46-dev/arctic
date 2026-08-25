@@ -91,7 +91,7 @@ func main() {
 		writer.Header().Set("Content-Type", "text/javascript")
 		_, _ = writer.Write(wasmExec)
 	})
-	
+
 	http.Handle("/client.wasm", http.FileServer(http.Dir("examples/websocket_browser")))
 
 	log.Println("open http://localhost:8080 in your browser")
