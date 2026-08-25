@@ -32,7 +32,9 @@ func server() {
 
 		client.OnMessage(func(msg []byte) {
 			log.Printf("%s Received message: %s", logPrefix, string(msg))
-			client.Send([]byte("Message received"))
+			if err = client.Send([]byte("Message received")); err != nil {
+				log.Fatalf("%s Failed to send response: %v", logPrefix, err)
+			}
 		})
 
 		client.OnClose(func() {

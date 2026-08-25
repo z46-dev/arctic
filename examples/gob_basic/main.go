@@ -37,10 +37,12 @@ func server() {
 
 		client.OnMessage(func(msg Message) {
 			log.Printf("%s Received message: %+v", logPrefix, msg)
-			client.Send(Message{
+			if err = client.Send(Message{
 				Text:   "Hello, Client!",
 				Number: msg.Number + 1,
-			})
+			}); err != nil {
+				log.Fatalf("%s Failed to send response: %v", logPrefix, err)
+			}
 		})
 
 		client.OnClose(func() {

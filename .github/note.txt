@@ -1,1 +1,0 @@
-The coverage tests should run always!
