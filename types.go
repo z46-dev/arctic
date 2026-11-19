@@ -159,6 +159,25 @@ type (
 		mutex      sync.RWMutex
 	}
 
+	ContractFactory[ContractType any] func(*ContractPeer) ContractType
+
+	ContractClient[ContractType any] struct {
+		*Client
+		Contract ContractType
+	}
+
+	ContractServerClient[ContractType any] struct {
+		*ServerClient
+		Contract ContractType
+	}
+
+	ContractServer[ContractType any] struct {
+		*Server
+		factory  ContractFactory[ContractType]
+		onClient func(*ContractServerClient[ContractType])
+		mutex    sync.RWMutex
+	}
+
 	gobTypeRegistry struct {
 		mutex      sync.RWMutex
 		registered map[reflect.Type]struct{}

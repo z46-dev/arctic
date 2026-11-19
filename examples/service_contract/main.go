@@ -1,0 +1,137 @@
+package main
+
+import (
+	"flag"
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/z46-dev/arctic"
+	"github.com/z46-dev/arctic/examples/service_contract/proto"
+)
+
+var flagAddr *string = flag.String("addr", "localhost:8080", "Address for the server to bind to (e.g., [::1]:8080)")
+
+func server() {
+	var (
+		server *arctic.ContractServer[proto.Contract]
+		err    error
+	)
+
+	if server, err = arctic.NewContractServer(arctic.ServerConfig{
+		BindAddress: *flagAddr,
+		BufferSize:  1024,
+		Timeout:     5 * time.Second,
+	}, proto.ContractFor()); err != nil {
+		log.Fatalf("Failed to create server: %v", err)
+	}
+
+	server.OnClient(func(client *arctic.ContractServerClient[proto.Contract]) {
+		var logPrefix string = fmt.Sprintf("[%d | %s]", client.ID(), client.RemoteAddr())
+
+		log.Printf("%s Client connected", logPrefix)
+
+		client.Contract.OnJoin(func(request proto.InitialRequest) (response proto.GenericResponse) {
+			response.OK = true
+			return
+		})
+
+		client.Contract.OnMath(func(request proto.MathRequest) (response proto.MathResponse) {
+			response.Valid = true
+
+			switch request.Operand {
+			case proto.MathOperandAddition:
+				response.Result = request.FirstOperator + request.SecondOperator
+			case proto.MathOperandSubtraction:
+				response.Result = request.FirstOperator - request.SecondOperator
+			case proto.MathOperandMultiplication:
+				response.Result = request.FirstOperator * request.SecondOperator
+			case proto.MathOperandDivision:
+				if request.SecondOperator == 0 {
+					response.Valid = false
+					response.ErrorMessage = "Cannot divide by zero!"
+				} else {
+					response.Result = request.FirstOperator / request.SecondOperator
+				}
+			}
+
+			return
+		})
+
+		client.OnClose(func() {
+			log.Printf("%s Client disconnected", logPrefix)
+		})
+
+		client.OnError(func(err error) {
+			log.Printf("%s Client error: %v", logPrefix, err)
+		})
+	})
+
+	if err = server.Listen(); err != nil {
+		log.Fatalf("Failed to start server: %v", err)
+	}
+}
+
+func client() {
+	var (
+		client *arctic.ContractClient[proto.Contract]
+		err    error
+	)
+
+	if client, err = arctic.NewContractClient(arctic.ClientConfig{
+		ServerAddress: *flagAddr,
+		BufferSize:    1024,
+		Timeout:       5 * time.Second,
+	}, proto.ContractFor()); err != nil {
+		log.Fatalf("Failed to create client: %v", err)
+	}
+
+	client.OnClose(func() {
+		log.Println("Connection closed by server")
+	})
+
+	client.OnError(func(err error) {
+		log.Printf("Client error: %v", err)
+	})
+
+	if err = client.Connect(); err != nil {
+		log.Fatalf("Failed to connect to server: %v", err)
+	}
+
+	var (
+		resp1 proto.GenericResponse
+		resp2 proto.MathResponse
+	)
+
+	if resp1, err = client.Contract.Join(proto.InitialRequest{Message: "Hi"}); err != nil {
+		log.Printf("Failed to perform join: %v", err)
+	} else if !resp1.OK {
+		log.Printf("Failed to join: %v", resp1.Message)
+	}
+
+	if resp2, err = client.Contract.Math(proto.MathRequest{
+		FirstOperator:  1,
+		SecondOperator: 3,
+		Operand:        proto.MathOperandAddition,
+	}); err != nil {
+		log.Printf("Failed to perform math: %v", err)
+	} else if !resp2.Valid {
+		log.Printf("Failed to compute math: %v", resp2.ErrorMessage)
+	} else {
+		log.Printf("Math result: %v", resp2.Result)
+	}
+
+	// Keep the client running to receive messages
+	time.Sleep(time.Second)
+}
+
+func main() {
+	flag.Parse()
+
+	go server()
+
+	// Give the server a moment to start
+	time.Sleep(100 * time.Millisecond)
+
+	client()
+}

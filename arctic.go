@@ -41,6 +41,38 @@ func NewServer(config ServerConfig) (server *Server, err error) {
 	return
 }
 
+// NewContractClient creates a typed contract client over the raw client transport.
+func NewContractClient[ContractType any](config ClientConfig, factory ContractFactory[ContractType]) (client *ContractClient[ContractType], err error) {
+	if factory == nil {
+		err = ErrContractFactoryMissing
+		return
+	}
+
+	var raw *Client
+	if raw, err = NewClient(config); err != nil {
+		return
+	}
+
+	client = &ContractClient[ContractType]{Client: raw, Contract: factory(NewContractPeer(raw))}
+	return
+}
+
+// NewContractServer creates a typed contract server over the raw server transport.
+func NewContractServer[ContractType any](config ServerConfig, factory ContractFactory[ContractType]) (server *ContractServer[ContractType], err error) {
+	if factory == nil {
+		err = ErrContractFactoryMissing
+		return
+	}
+
+	var raw *Server
+	if raw, err = NewServer(config); err != nil {
+		return
+	}
+
+	server = &ContractServer[ContractType]{Server: raw, factory: factory}
+	return
+}
+
 func validateServerProtocol(protocol Protocol) (err error) {
 	if protocol != ProtocolTCP && protocol != ProtocolUDP {
 		err = fmt.Errorf("%w: %s", ErrProtocolUnsupported, protocol)
