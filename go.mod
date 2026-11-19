@@ -8,3 +8,5 @@ require (
 )
 
 require github.com/alexflint/go-scalar v1.2.0 // indirect
+
+tool github.com/z46-dev/arctic/cmd/arcticgen

@@ -1,6 +1,6 @@
 package proto
 
-//go:generate go run github.com/z46-dev/arctic/cmd/arcticgen
+//go:generate go tool github.com/z46-dev/arctic/cmd/arcticgen
 
 type (
 	MathOperand uint8
