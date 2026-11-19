@@ -146,7 +146,7 @@ func (contract %s) On%s(handler func(%s) %s) {
 		fail(err)
 	}
 
-	if err = os.WriteFile(args.Output, formatted, 0644); err != nil {
+	if err = os.WriteFile(args.Output, formatted, 0600); err != nil {
 		fail(err)
 	}
 }
