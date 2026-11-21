@@ -32,6 +32,7 @@ type (
 
 		Join(InitialRequest) GenericResponse
 		Math(MathRequest) MathResponse
+		Done(struct{}) GenericResponse
 	}
 )
 

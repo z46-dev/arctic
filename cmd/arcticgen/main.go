@@ -95,7 +95,10 @@ func main() {
 
 package %s
 
-import "github.com/z46-dev/arctic"
+import (
+	"context"
+	"github.com/z46-dev/arctic"
+)
 
 `, file.Name.Name)
 	var generatedNames map[string]struct{} = map[string]struct{}{}
@@ -130,11 +133,11 @@ func %sFor() (factory arctic.ContractFactory[%s]) {
 		`, generatedName, generatedName, generatedName)
 		for _, method := range contractInfo.methods {
 			fmt.Fprintf(&source, `
-func (contract %s) %s(request %s) (response %s, err error) {
-	return arctic.ContractCall[%s, %s](contract.peer, %q, request)
+func (contract %s) %s(ctx context.Context, request %s) (response %s, err error) {
+	return arctic.ContractCall[%s, %s](ctx, contract.peer, %q, request)
 }
 
-func (contract %s) On%s(handler func(%s) %s) {
+func (contract %s) On%s(handler func(*arctic.ContractContext, %s) %s) {
 	arctic.ContractHandle[%s, %s](contract.peer, %q, handler)
 }
 			`, generatedName, method.name, method.request, method.response, method.request, method.response, generatedName+"."+method.name, generatedName, method.name, method.request, method.response, method.request, method.response, generatedName+"."+method.name)

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"log"
@@ -31,12 +32,12 @@ func server() {
 
 		log.Printf("%s Client connected", logPrefix)
 
-		client.Contract.OnJoin(func(request proto.InitialRequest) (response proto.GenericResponse) {
+		client.Contract.OnJoin(func(_ *arctic.ContractContext, request proto.InitialRequest) (response proto.GenericResponse) {
 			response.OK = true
 			return
 		})
 
-		client.Contract.OnMath(func(request proto.MathRequest) (response proto.MathResponse) {
+		client.Contract.OnMath(func(_ *arctic.ContractContext, request proto.MathRequest) (response proto.MathResponse) {
 			response.Valid = true
 
 			switch request.Operand {
@@ -55,6 +56,13 @@ func server() {
 				}
 			}
 
+			return
+		})
+
+		client.Contract.OnDone(func(ctx *arctic.ContractContext, _ struct{}) (response proto.GenericResponse) {
+			response.OK = true
+			response.Message = "Goodbye!"
+			ctx.CloseAfterResponse()
 			return
 		})
 
@@ -103,13 +111,13 @@ func client() {
 		resp2 proto.MathResponse
 	)
 
-	if resp1, err = client.Contract.Join(proto.InitialRequest{Message: "Hi"}); err != nil {
+	if resp1, err = client.Contract.Join(context.Background(), proto.InitialRequest{Message: "Hi"}); err != nil {
 		log.Printf("Failed to perform join: %v", err)
 	} else if !resp1.OK {
 		log.Printf("Failed to join: %v", resp1.Message)
 	}
 
-	if resp2, err = client.Contract.Math(proto.MathRequest{
+	if resp2, err = client.Contract.Math(context.Background(), proto.MathRequest{
 		FirstOperator:  1,
 		SecondOperator: 3,
 		Operand:        proto.MathOperandAddition,
@@ -119,6 +127,14 @@ func client() {
 		log.Printf("Failed to compute math: %v", resp2.ErrorMessage)
 	} else {
 		log.Printf("Math result: %v", resp2.Result)
+	}
+
+	if resp1, err = client.Contract.Done(context.Background(), struct{}{}); err != nil {
+		log.Printf("Failed to perform done: %v", err)
+	} else if !resp1.OK {
+		log.Printf("Failed to done: %v", resp1.Message)
+	} else {
+		log.Printf("Done response: %v", resp1.Message)
 	}
 
 	// Keep the client running to receive messages

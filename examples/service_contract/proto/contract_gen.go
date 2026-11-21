@@ -2,7 +2,10 @@
 
 package proto
 
-import "github.com/z46-dev/arctic"
+import (
+	"context"
+	"github.com/z46-dev/arctic"
+)
 
 type Contract struct {
 	peer *arctic.ContractPeer
@@ -20,18 +23,26 @@ func ContractFor() (factory arctic.ContractFactory[Contract]) {
 	return
 }
 
-func (contract Contract) Join(request InitialRequest) (response GenericResponse, err error) {
-	return arctic.ContractCall[InitialRequest, GenericResponse](contract.peer, "Contract.Join", request)
+func (contract Contract) Join(ctx context.Context, request InitialRequest) (response GenericResponse, err error) {
+	return arctic.ContractCall[InitialRequest, GenericResponse](ctx, contract.peer, "Contract.Join", request)
 }
 
-func (contract Contract) OnJoin(handler func(InitialRequest) GenericResponse) {
+func (contract Contract) OnJoin(handler func(*arctic.ContractContext, InitialRequest) GenericResponse) {
 	arctic.ContractHandle[InitialRequest, GenericResponse](contract.peer, "Contract.Join", handler)
 }
 
-func (contract Contract) Math(request MathRequest) (response MathResponse, err error) {
-	return arctic.ContractCall[MathRequest, MathResponse](contract.peer, "Contract.Math", request)
+func (contract Contract) Math(ctx context.Context, request MathRequest) (response MathResponse, err error) {
+	return arctic.ContractCall[MathRequest, MathResponse](ctx, contract.peer, "Contract.Math", request)
 }
 
-func (contract Contract) OnMath(handler func(MathRequest) MathResponse) {
+func (contract Contract) OnMath(handler func(*arctic.ContractContext, MathRequest) MathResponse) {
 	arctic.ContractHandle[MathRequest, MathResponse](contract.peer, "Contract.Math", handler)
+}
+
+func (contract Contract) Done(ctx context.Context, request struct{}) (response GenericResponse, err error) {
+	return arctic.ContractCall[struct{}, GenericResponse](ctx, contract.peer, "Contract.Done", request)
+}
+
+func (contract Contract) OnDone(handler func(*arctic.ContractContext, struct{}) GenericResponse) {
+	arctic.ContractHandle[struct{}, GenericResponse](contract.peer, "Contract.Done", handler)
 }
