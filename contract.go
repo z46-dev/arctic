@@ -1,11 +1,8 @@
 package arctic
 
 import (
-	"bytes"
 	"context"
-	"encoding/gob"
 	"errors"
-	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -14,23 +11,40 @@ import (
 var (
 	ErrContractCallTimeout    error = errors.New("arctic: contract call timed out")
 	ErrContractFactoryMissing error = errors.New("arctic: contract factory is nil")
+	ErrContractStreamClosed   error = errors.New("arctic: contract stream is closed")
+	ErrContractStreamStarted  error = errors.New("arctic: contract stream context was already used")
+	ErrContractStreamBacklog  error = errors.New("arctic: contract stream handler queue is full")
 )
 
 type (
 	contractFrame struct {
-		ID       uint64
-		Kind     string
-		Method   string
-		Deadline int64
-		Payload  []byte
-		Error    string
+		ID        uint64
+		Kind      string
+		Method    string
+		ScopeID   uint64
+		StreamID  uint64
+		Direction string
+		Deadline  int64
+		Payload   []byte
+		Error     string
 	}
 
-	contractHandler func(*ContractContext, []byte) ([]byte, error)
+	contractHandler    func(*ContractContext, []byte) ([]byte, error)
+	contractHandlerKey struct {
+		scopeID uint64
+		method  string
+	}
+	activeContractCall struct {
+		scopeID uint64
+		cancel  context.CancelFunc
+	}
 
-	// ContractContext is the context for one inbound contract handler call.
 	ContractContext struct {
 		context.Context
+		peer               *ContractPeer
+		stream             *contractStreamState
+		scopeID            uint64
+		streamInitiator    bool
 		closeAfterResponse bool
 	}
 
@@ -40,9 +54,17 @@ type (
 		nextID   atomic.Uint64
 		mutex    sync.Mutex
 		pending  map[uint64]chan contractFrame
-		handlers map[string]contractHandler
-		active   map[uint64]context.CancelFunc
+		handlers map[contractHandlerKey]contractHandler
+		deferred map[contractHandlerKey][]contractFrame
+		active   map[uint64]activeContractCall
+		streams  map[uint64]*contractStreamState
 	}
+)
+
+const (
+	contractRequestDirection  string = "request"
+	contractResponseDirection string = "response"
+	contractStreamQueueLimit  int    = 128
 )
 
 // NewContractPeer adds correlated request/reply dispatch to a raw Arctic client.
@@ -51,8 +73,10 @@ func NewContractPeer(client *Client) (peer *ContractPeer) {
 		client:   client,
 		timeout:  client.config.Timeout,
 		pending:  map[uint64]chan contractFrame{},
-		handlers: map[string]contractHandler{},
-		active:   map[uint64]context.CancelFunc{},
+		handlers: map[contractHandlerKey]contractHandler{},
+		deferred: map[contractHandlerKey][]contractFrame{},
+		active:   map[uint64]activeContractCall{},
+		streams:  map[uint64]*contractStreamState{},
 	}
 
 	client.OnMessage(peer.onMessage)
@@ -65,14 +89,55 @@ func NewContractPeer(client *Client) (peer *ContractPeer) {
 		}
 
 		peer.cancelActive()
+		peer.closeAllStreams()
 	}
 
 	client.mutex.Unlock()
 	return
 }
 
+// NewContractStreamingContext creates the initiator side of a typed duplex stream.
+func NewContractStreamingContext(parent context.Context, peer *ContractPeer, parentScopeID uint64) (ctx *ContractContext) {
+	if parent == nil {
+		parent = context.Background()
+	}
+
+	var stream *contractStreamState = newContractStreamState(peer, peer.nextID.Add(1), parentScopeID, false)
+	ctx = &ContractContext{
+		Context:         parent,
+		peer:            peer,
+		stream:          stream,
+		scopeID:         stream.id,
+		streamInitiator: true,
+	}
+
+	return
+}
+
 // ContractCall sends a typed request and waits for its typed response.
 func ContractCall[Request, Response any](ctx context.Context, peer *ContractPeer, method string, request Request) (response Response, err error) {
+	response, err = contractCall[Request, Response](ctx, peer, 0, method, request, nil)
+	return
+}
+
+// ContractCallScoped sends a typed request from a nested contract scope.
+func ContractCallScoped[Request, Response any](ctx context.Context, peer *ContractPeer, scopeID uint64, method string, request Request) (response Response, err error) {
+	response, err = contractCall[Request, Response](ctx, peer, scopeID, method, request, nil)
+	return
+}
+
+// ContractStreamingCall opens a duplex stream and waits for its final response.
+func ContractStreamingCall[Request, Response any](ctx *ContractContext, method string, request Request) (response Response, err error) {
+	if ctx == nil || ctx.peer == nil || ctx.stream == nil {
+		err = errors.New("arctic: invalid contract streaming context")
+		return
+	}
+
+	response, err = contractCall[Request, Response](ctx, ctx.peer, ctx.stream.parentScopeID, method, request, ctx.stream)
+	return
+}
+
+func contractCall[Request, Response any](ctx context.Context, peer *ContractPeer, scopeID uint64, method string, request Request, stream *contractStreamState) (response Response, err error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -97,18 +162,35 @@ func ContractCall[Request, Response any](ctx context.Context, peer *ContractPeer
 	}
 
 	var (
-		id     uint64             = peer.nextID.Add(1)
+		id     uint64
 		result chan contractFrame = make(chan contractFrame, 1)
 	)
 
+	if stream == nil {
+		id = peer.nextID.Add(1)
+	} else {
+		if err = stream.begin(); err != nil {
+			return
+		}
+		id = stream.id
+	}
+
 	peer.mutex.Lock()
 	peer.pending[id] = result
+	if stream != nil {
+		peer.streams[stream.id] = stream
+	}
+
 	peer.mutex.Unlock()
 
 	defer func() {
 		peer.mutex.Lock()
 		delete(peer.pending, id)
 		peer.mutex.Unlock()
+
+		if stream != nil {
+			peer.closeStream(stream.id)
+		}
 	}()
 
 	var deadline int64
@@ -116,10 +198,17 @@ func ContractCall[Request, Response any](ctx context.Context, peer *ContractPeer
 		deadline = deadlineTime.UnixNano()
 	}
 
+	var streamID uint64
+	if stream != nil {
+		streamID = stream.id
+	}
+
 	if err = peer.send(contractFrame{
 		ID:       id,
 		Kind:     "request",
 		Method:   method,
+		ScopeID:  scopeID,
+		StreamID: streamID,
 		Deadline: deadline,
 		Payload:  payload,
 	}); err != nil {
@@ -136,11 +225,7 @@ func ContractCall[Request, Response any](ctx context.Context, peer *ContractPeer
 			err = ErrContractCallTimeout
 		}
 
-		_ = peer.send(contractFrame{ID: id, Kind: "cancel"})
-		return
-	}
-
-	if err != nil {
+		_ = peer.send(contractFrame{ID: id, Kind: "cancel", StreamID: streamID})
 		return
 	}
 
@@ -153,12 +238,49 @@ func ContractCall[Request, Response any](ctx context.Context, peer *ContractPeer
 	return
 }
 
-// ContractHandle registers a typed handler for requests received by this peer.
+// ContractHandle registers a typed handler for unary requests received by this peer.
 func ContractHandle[Request, Response any](peer *ContractPeer, method string, handler func(*ContractContext, Request) Response) {
-	peer.mutex.Lock()
-	defer peer.mutex.Unlock()
+	ContractHandleScoped(peer, 0, method, handler)
+}
 
-	peer.handlers[method] = func(ctx *ContractContext, payload []byte) (encoded []byte, err error) {
+// ContractHandleScoped registers a typed handler in a nested contract scope.
+func ContractHandleScoped[Request, Response any](peer *ContractPeer, scopeID uint64, method string, handler func(*ContractContext, Request) Response) {
+	registerContractHandler(peer, scopeID, method, makeContractHandler(handler))
+}
+
+// ContractStreamingHandle registers a typed handler for streaming requests.
+func ContractStreamingHandle[Request, Response any](peer *ContractPeer, method string, handler func(*ContractContext, Request) Response) {
+	ContractStreamingHandleScoped(peer, 0, method, handler)
+}
+
+// ContractStreamingHandleScoped registers a stream-opening handler in a nested contract scope.
+func ContractStreamingHandleScoped[Request, Response any](peer *ContractPeer, scopeID uint64, method string, handler func(*ContractContext, Request) Response) {
+	registerContractHandler(peer, scopeID, method, makeContractHandler(handler))
+}
+
+func registerContractHandler(peer *ContractPeer, scopeID uint64, method string, handler contractHandler) {
+	peer.mutex.Lock()
+	var key contractHandlerKey = contractHandlerKey{scopeID: scopeID, method: method}
+	peer.handlers[key] = handler
+	var deferred []contractFrame = peer.deferred[key]
+	delete(peer.deferred, key)
+	peer.mutex.Unlock()
+	for _, frame := range deferred {
+		peer.dispatchIncoming(frame)
+	}
+}
+
+// ScopeID returns the active contract scope for nested contract wrappers.
+func (ctx *ContractContext) ScopeID() (scopeID uint64) {
+	scopeID = ctx.scopeID
+	if ctx.stream != nil {
+		scopeID = ctx.stream.id
+	}
+	return
+}
+
+func makeContractHandler[Request, Response any](handler func(*ContractContext, Request) Response) (registered contractHandler) {
+	registered = func(ctx *ContractContext, payload []byte) (encoded []byte, err error) {
 		var request Request
 		if err = decodeContractValue(payload, &request); err != nil {
 			return
@@ -168,173 +290,6 @@ func ContractHandle[Request, Response any](peer *ContractPeer, method string, ha
 		encoded, err = encodeContractValue(response)
 		return
 	}
-}
 
-// CloseAfterResponse closes this peer after the current handler's response is sent.
-func (ctx *ContractContext) CloseAfterResponse() {
-	ctx.closeAfterResponse = true
-}
-
-// OnClient sets the handler invoked for each connected contract server client.
-func (server *ContractServer[ContractType]) OnClient(handler func(*ContractServerClient[ContractType])) {
-	server.mutex.Lock()
-	server.onClient = handler
-	server.mutex.Unlock()
-
-	server.Server.OnClient(func(raw *ServerClient) {
-		var (
-			peer   *ContractPeer                       = NewContractPeer(raw.Client)
-			client *ContractServerClient[ContractType] = &ContractServerClient[ContractType]{
-				ServerClient: raw,
-				Contract:     server.factory(peer),
-			}
-		)
-
-		server.mutex.RLock()
-		var currentHandler func(*ContractServerClient[ContractType]) = server.onClient
-		server.mutex.RUnlock()
-
-		if currentHandler != nil {
-			currentHandler(client)
-		}
-	})
-}
-
-func (peer *ContractPeer) send(frame contractFrame) (err error) {
-	var encoded []byte
-	if encoded, err = encodeContractValue(frame); err != nil {
-		return
-	}
-
-	err = peer.client.Send(encoded)
-	return
-}
-
-func (peer *ContractPeer) onMessage(message []byte) {
-	var (
-		frame contractFrame
-		err   error
-	)
-
-	if err = decodeContractValue(message, &frame); err != nil {
-		peer.client.handleError(fmt.Errorf("arctic: invalid contract frame: %w", err))
-		return
-	}
-
-	if frame.Kind == "response" {
-		peer.mutex.Lock()
-		var result chan contractFrame = peer.pending[frame.ID]
-		peer.mutex.Unlock()
-
-		if result != nil {
-			result <- frame
-		}
-
-		return
-	}
-
-	if frame.Kind == "cancel" {
-		peer.mutex.Lock()
-		var cancel context.CancelFunc = peer.active[frame.ID]
-		peer.mutex.Unlock()
-
-		if cancel != nil {
-			cancel()
-		}
-
-		return
-	}
-
-	peer.mutex.Lock()
-	var handler contractHandler = peer.handlers[frame.Method]
-	peer.mutex.Unlock()
-
-	if handler == nil {
-		_ = peer.send(contractFrame{ID: frame.ID, Kind: "response", Error: "unknown contract method: " + frame.Method})
-		return
-	}
-
-	var (
-		ctx       context.Context
-		cancel    context.CancelFunc
-		ctxHandle *ContractContext
-	)
-
-	if frame.Deadline == 0 {
-		ctx, cancel = context.WithCancel(context.Background())
-	} else {
-		ctx, cancel = context.WithDeadline(context.Background(), time.Unix(0, frame.Deadline))
-	}
-
-	ctxHandle = &ContractContext{Context: ctx}
-	peer.mutex.Lock()
-	peer.active[frame.ID] = cancel
-	peer.mutex.Unlock()
-
-	go peer.dispatchRequest(frame, handler, ctxHandle, cancel)
-}
-
-func (peer *ContractPeer) dispatchRequest(frame contractFrame, handler contractHandler, ctx *ContractContext, cancel context.CancelFunc) {
-	var (
-		payload []byte
-		err     error
-	)
-
-	if payload, err = handler(ctx, frame.Payload); err != nil {
-		cancel()
-		peer.mutex.Lock()
-		delete(peer.active, frame.ID)
-		peer.mutex.Unlock()
-
-		_ = peer.send(contractFrame{ID: frame.ID, Kind: "response", Error: err.Error()})
-		return
-	}
-
-	if ctx.Err() == nil {
-		if err = peer.send(contractFrame{ID: frame.ID, Kind: "response", Payload: payload}); err != nil {
-			peer.client.handleError(err)
-		}
-	}
-
-	cancel()
-	peer.mutex.Lock()
-	delete(peer.active, frame.ID)
-	peer.mutex.Unlock()
-
-	if ctx.closeAfterResponse {
-		if err = peer.client.Close(); err != nil {
-			peer.client.handleError(err)
-		}
-	}
-}
-
-// Cancel requests cancellation of active handlers when this peer closes.
-func (peer *ContractPeer) cancelActive() {
-	peer.mutex.Lock()
-
-	var cancellations []context.CancelFunc
-	for _, cancel := range peer.active {
-		cancellations = append(cancellations, cancel)
-	}
-
-	peer.mutex.Unlock()
-
-	for _, cancel := range cancellations {
-		cancel()
-	}
-}
-
-func encodeContractValue(value any) (encoded []byte, err error) {
-	var buffer bytes.Buffer
-	if err = gob.NewEncoder(&buffer).Encode(value); err != nil {
-		return
-	}
-
-	encoded = buffer.Bytes()
-	return
-}
-
-func decodeContractValue(encoded []byte, value any) (err error) {
-	err = gob.NewDecoder(bytes.NewReader(encoded)).Decode(value)
 	return
 }

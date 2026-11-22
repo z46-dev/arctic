@@ -25,14 +25,29 @@ type (
 		Result       float64
 	}
 
+	DataStreamingRequest struct {
+		NumExpectedChunks int
+	}
+
+	DataStreamingBody struct {
+		Chunk []byte
+	}
+
+	StreamingContractDefinition interface {
+		__ArcticContract__() struct{}
+		Data(DataStreamingBody) DataStreamingBody
+	}
+
 	ContractDefinition interface {
 		__ArcticContract__() struct {
-			Join struct{} `arctic:"direction=client-server,one-at-once"`
+			Join          struct{}                    `arctic:"direction=client-server,one-at-once"`
+			DataStreaming StreamingContractDefinition `arctic:"streaming"`
 		}
 
 		Join(InitialRequest) GenericResponse
 		Math(MathRequest) MathResponse
 		Done(struct{}) GenericResponse
+		DataStreaming(DataStreamingRequest) GenericResponse
 	}
 )
 

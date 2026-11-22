@@ -4,15 +4,42 @@ package proto
 
 import (
 	"context"
+
 	"github.com/z46-dev/arctic"
 )
 
+type StreamingContract struct {
+	peer    *arctic.ContractPeer
+	scopeID uint64
+}
+
+type StreamingContractOptions struct {
+}
+
+func StreamingContractFor() (factory arctic.ContractFactory[StreamingContract]) {
+	factory = func(peer *arctic.ContractPeer) (contract StreamingContract) {
+		contract.peer = peer
+		return
+	}
+	return
+}
+
+func (contract StreamingContract) Data(ctx context.Context, request DataStreamingBody) (response DataStreamingBody, err error) {
+	return arctic.ContractCallScoped[DataStreamingBody, DataStreamingBody](ctx, contract.peer, contract.scopeID, "StreamingContract.Data", request)
+}
+
+func (contract StreamingContract) OnData(handler func(*arctic.ContractContext, DataStreamingBody) DataStreamingBody) {
+	arctic.ContractHandleScoped[DataStreamingBody, DataStreamingBody](contract.peer, contract.scopeID, "StreamingContract.Data", handler)
+}
+
 type Contract struct {
-	peer *arctic.ContractPeer
+	peer    *arctic.ContractPeer
+	scopeID uint64
 }
 
 type ContractOptions struct {
-	Join struct{} `arctic:"direction=client-server,one-at-once"`
+	Join          struct{}                    `arctic:"direction=client-server,one-at-once"`
+	DataStreaming StreamingContractDefinition `arctic:"streaming"`
 }
 
 func ContractFor() (factory arctic.ContractFactory[Contract]) {
@@ -24,25 +51,49 @@ func ContractFor() (factory arctic.ContractFactory[Contract]) {
 }
 
 func (contract Contract) Join(ctx context.Context, request InitialRequest) (response GenericResponse, err error) {
-	return arctic.ContractCall[InitialRequest, GenericResponse](ctx, contract.peer, "Contract.Join", request)
+	return arctic.ContractCallScoped[InitialRequest, GenericResponse](ctx, contract.peer, contract.scopeID, "Contract.Join", request)
 }
 
 func (contract Contract) OnJoin(handler func(*arctic.ContractContext, InitialRequest) GenericResponse) {
-	arctic.ContractHandle[InitialRequest, GenericResponse](contract.peer, "Contract.Join", handler)
+	arctic.ContractHandleScoped[InitialRequest, GenericResponse](contract.peer, contract.scopeID, "Contract.Join", handler)
 }
 
 func (contract Contract) Math(ctx context.Context, request MathRequest) (response MathResponse, err error) {
-	return arctic.ContractCall[MathRequest, MathResponse](ctx, contract.peer, "Contract.Math", request)
+	return arctic.ContractCallScoped[MathRequest, MathResponse](ctx, contract.peer, contract.scopeID, "Contract.Math", request)
 }
 
 func (contract Contract) OnMath(handler func(*arctic.ContractContext, MathRequest) MathResponse) {
-	arctic.ContractHandle[MathRequest, MathResponse](contract.peer, "Contract.Math", handler)
+	arctic.ContractHandleScoped[MathRequest, MathResponse](contract.peer, contract.scopeID, "Contract.Math", handler)
 }
 
 func (contract Contract) Done(ctx context.Context, request struct{}) (response GenericResponse, err error) {
-	return arctic.ContractCall[struct{}, GenericResponse](ctx, contract.peer, "Contract.Done", request)
+	return arctic.ContractCallScoped[struct{}, GenericResponse](ctx, contract.peer, contract.scopeID, "Contract.Done", request)
 }
 
 func (contract Contract) OnDone(handler func(*arctic.ContractContext, struct{}) GenericResponse) {
-	arctic.ContractHandle[struct{}, GenericResponse](contract.peer, "Contract.Done", handler)
+	arctic.ContractHandleScoped[struct{}, GenericResponse](contract.peer, contract.scopeID, "Contract.Done", handler)
+}
+
+type DataStreamingContext struct {
+	*arctic.ContractContext
+	Stream StreamingContract
+}
+
+func (contract Contract) NewDataStreamingContext(parent context.Context) (streamContext *DataStreamingContext) {
+	var base *arctic.ContractContext = arctic.NewContractStreamingContext(parent, contract.peer, contract.scopeID)
+	var nestedContract StreamingContract = StreamingContract{peer: contract.peer, scopeID: base.ScopeID()}
+	streamContext = &DataStreamingContext{ContractContext: base, Stream: nestedContract}
+	return
+}
+
+func (contract Contract) DataStreaming(ctx *DataStreamingContext, request DataStreamingRequest) (response GenericResponse, err error) {
+	return arctic.ContractStreamingCall[DataStreamingRequest, GenericResponse](ctx.ContractContext, "Contract.DataStreaming", request)
+}
+
+func (contract Contract) OnDataStreaming(handler func(*DataStreamingContext, DataStreamingRequest) GenericResponse) {
+	arctic.ContractStreamingHandleScoped[DataStreamingRequest, GenericResponse](contract.peer, contract.scopeID, "Contract.DataStreaming", func(ctx *arctic.ContractContext, request DataStreamingRequest) GenericResponse {
+		var nestedContract StreamingContract = StreamingContract{peer: contract.peer, scopeID: ctx.ScopeID()}
+		var streamContext *DataStreamingContext = &DataStreamingContext{ContractContext: ctx, Stream: nestedContract}
+		return handler(streamContext, request)
+	})
 }

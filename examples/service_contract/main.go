@@ -66,6 +66,32 @@ func server() {
 			return
 		})
 
+		client.Contract.OnDataStreaming(func(ctx *proto.DataStreamingContext, request proto.DataStreamingRequest) (response proto.GenericResponse) {
+			var (
+				done                   chan struct{} = make(chan struct{})
+				received, sizeReceived int           = 0, 0
+			)
+
+			// The request stream can close independently while this handler still replies.
+			ctx.OnStreamClose(func() {
+				close(done)
+			})
+
+			ctx.Stream.OnData(func(_ *arctic.ContractContext, data proto.DataStreamingBody) (reply proto.DataStreamingBody) {
+				received++
+				sizeReceived += len(data.Chunk)
+				reply = data
+				return
+			})
+
+			<-done
+			ctx.CloseStream()
+
+			response.OK = request.NumExpectedChunks == received
+			response.Message = fmt.Sprintf("Received %d chunks (%d bytes)", received, sizeReceived)
+			return
+		})
+
 		client.OnClose(func() {
 			log.Printf("%s Client disconnected", logPrefix)
 		})
@@ -107,8 +133,8 @@ func client() {
 	}
 
 	var (
-		resp1 proto.GenericResponse
-		resp2 proto.MathResponse
+		resp1, resp3 proto.GenericResponse
+		resp2        proto.MathResponse
 	)
 
 	if resp1, err = client.Contract.Join(context.Background(), proto.InitialRequest{Message: "Hi"}); err != nil {
@@ -127,6 +153,30 @@ func client() {
 		log.Printf("Failed to compute math: %v", resp2.ErrorMessage)
 	} else {
 		log.Printf("Math result: %v", resp2.Result)
+	}
+
+	// Configure the stream before starting the synchronous call, which waits for its final response.
+	var streamContext *proto.DataStreamingContext = client.Contract.NewDataStreamingContext(context.Background())
+	streamContext.OnStreamClose(func() {
+		log.Println("Remote stream side closed")
+	})
+
+	go func() {
+		for range 10 {
+			time.Sleep(100 * time.Millisecond)
+			if _, err := streamContext.Stream.Data(streamContext, proto.DataStreamingBody{Chunk: []byte("chunk")}); err != nil {
+				log.Printf("Failed to send stream chunk: %v", err)
+				return
+			}
+		}
+
+		streamContext.CloseStream()
+	}()
+
+	if resp3, err = client.Contract.DataStreaming(streamContext, proto.DataStreamingRequest{NumExpectedChunks: 10}); err != nil {
+		log.Printf("Failed to perform data streaming: %v", err)
+	} else {
+		log.Printf("Streaming response: %s", resp3.Message)
 	}
 
 	if resp1, err = client.Contract.Done(context.Background(), struct{}{}); err != nil {
