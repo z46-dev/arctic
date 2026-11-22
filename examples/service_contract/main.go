@@ -85,7 +85,9 @@ func server() {
 			})
 
 			<-done
-			ctx.CloseStream()
+			if err := ctx.CloseStream(); err != nil {
+				log.Printf("%s Failed to close stream: %v", logPrefix, err)
+			}
 
 			response.OK = request.NumExpectedChunks == received
 			response.Message = fmt.Sprintf("Received %d chunks (%d bytes)", received, sizeReceived)
@@ -170,7 +172,9 @@ func client() {
 			}
 		}
 
-		streamContext.CloseStream()
+		if err := streamContext.CloseStream(); err != nil {
+			log.Printf("Failed to close stream: %v", err)
+		}
 	}()
 
 	if resp3, err = client.Contract.DataStreaming(streamContext, proto.DataStreamingRequest{NumExpectedChunks: 10}); err != nil {
