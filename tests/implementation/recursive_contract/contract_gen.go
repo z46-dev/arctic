@@ -8,6 +8,16 @@ import (
 	"github.com/z46-dev/arctic"
 )
 
+type ContractMessageType = arctic.ContractMessageType
+
+const (
+	ContractMessageDeepestContractLeaf ContractMessageType = iota
+	ContractMessageDeepContractOpenLeaf
+	ContractMessageNestedContractOpenDeep
+	ContractMessageStreamingContractOpenNested
+	ContractMessageRootContractOpenRoot
+)
+
 type DeepestContract struct {
 	peer    *arctic.ContractPeer
 	scopeID uint64
@@ -24,12 +34,20 @@ func DeepestContractFor() (factory arctic.ContractFactory[DeepestContract]) {
 	return
 }
 
+func (contract DeepestContract) AddInboundMiddleware(middleware arctic.ContractMiddleware) {
+	contract.peer.AddInboundMiddleware(middleware)
+}
+
+func (contract DeepestContract) AddOutboundMiddleware(middleware arctic.ContractMiddleware) {
+	contract.peer.AddOutboundMiddleware(middleware)
+}
+
 func (contract DeepestContract) Leaf(ctx context.Context, request Message) (response Response, err error) {
-	return arctic.ContractCallScoped[Message, Response](ctx, contract.peer, contract.scopeID, "DeepestContract.Leaf", request)
+	return arctic.ContractCallTypedScoped[Message, Response](ctx, contract.peer, contract.scopeID, ContractMessageDeepestContractLeaf, "DeepestContract.Leaf", request)
 }
 
 func (contract DeepestContract) OnLeaf(handler func(*arctic.ContractContext, Message) Response) {
-	arctic.ContractHandleScoped[Message, Response](contract.peer, contract.scopeID, "DeepestContract.Leaf", handler)
+	arctic.ContractHandleTypedScoped[Message, Response](contract.peer, contract.scopeID, ContractMessageDeepestContractLeaf, "DeepestContract.Leaf", handler)
 }
 
 type DeepContract struct {
@@ -49,6 +67,14 @@ func DeepContractFor() (factory arctic.ContractFactory[DeepContract]) {
 	return
 }
 
+func (contract DeepContract) AddInboundMiddleware(middleware arctic.ContractMiddleware) {
+	contract.peer.AddInboundMiddleware(middleware)
+}
+
+func (contract DeepContract) AddOutboundMiddleware(middleware arctic.ContractMiddleware) {
+	contract.peer.AddOutboundMiddleware(middleware)
+}
+
 type OpenLeafContext struct {
 	*arctic.ContractContext
 	Stream DeepestContract
@@ -62,11 +88,11 @@ func (contract DeepContract) NewOpenLeafContext(parent context.Context) (streamC
 }
 
 func (contract DeepContract) OpenLeaf(ctx *OpenLeafContext, request Request) (response Response, err error) {
-	return arctic.ContractStreamingCall[Request, Response](ctx.ContractContext, "DeepContract.OpenLeaf", request)
+	return arctic.ContractStreamingCallTyped[Request, Response](ctx.ContractContext, ContractMessageDeepContractOpenLeaf, "DeepContract.OpenLeaf", request)
 }
 
 func (contract DeepContract) OnOpenLeaf(handler func(*OpenLeafContext, Request) Response) {
-	arctic.ContractStreamingHandleScoped[Request, Response](contract.peer, contract.scopeID, "DeepContract.OpenLeaf", func(ctx *arctic.ContractContext, request Request) Response {
+	arctic.ContractStreamingHandleTypedScoped[Request, Response](contract.peer, contract.scopeID, ContractMessageDeepContractOpenLeaf, "DeepContract.OpenLeaf", func(ctx *arctic.ContractContext, request Request) Response {
 		var nestedContract DeepestContract = DeepestContract{peer: contract.peer, scopeID: ctx.ScopeID()}
 		var streamContext *OpenLeafContext = &OpenLeafContext{ContractContext: ctx, Stream: nestedContract}
 		return handler(streamContext, request)
@@ -90,6 +116,14 @@ func NestedContractFor() (factory arctic.ContractFactory[NestedContract]) {
 	return
 }
 
+func (contract NestedContract) AddInboundMiddleware(middleware arctic.ContractMiddleware) {
+	contract.peer.AddInboundMiddleware(middleware)
+}
+
+func (contract NestedContract) AddOutboundMiddleware(middleware arctic.ContractMiddleware) {
+	contract.peer.AddOutboundMiddleware(middleware)
+}
+
 type OpenDeepContext struct {
 	*arctic.ContractContext
 	Stream DeepContract
@@ -103,11 +137,11 @@ func (contract NestedContract) NewOpenDeepContext(parent context.Context) (strea
 }
 
 func (contract NestedContract) OpenDeep(ctx *OpenDeepContext, request Request) (response Response, err error) {
-	return arctic.ContractStreamingCall[Request, Response](ctx.ContractContext, "NestedContract.OpenDeep", request)
+	return arctic.ContractStreamingCallTyped[Request, Response](ctx.ContractContext, ContractMessageNestedContractOpenDeep, "NestedContract.OpenDeep", request)
 }
 
 func (contract NestedContract) OnOpenDeep(handler func(*OpenDeepContext, Request) Response) {
-	arctic.ContractStreamingHandleScoped[Request, Response](contract.peer, contract.scopeID, "NestedContract.OpenDeep", func(ctx *arctic.ContractContext, request Request) Response {
+	arctic.ContractStreamingHandleTypedScoped[Request, Response](contract.peer, contract.scopeID, ContractMessageNestedContractOpenDeep, "NestedContract.OpenDeep", func(ctx *arctic.ContractContext, request Request) Response {
 		var nestedContract DeepContract = DeepContract{peer: contract.peer, scopeID: ctx.ScopeID()}
 		var streamContext *OpenDeepContext = &OpenDeepContext{ContractContext: ctx, Stream: nestedContract}
 		return handler(streamContext, request)
@@ -131,6 +165,14 @@ func StreamingContractFor() (factory arctic.ContractFactory[StreamingContract]) 
 	return
 }
 
+func (contract StreamingContract) AddInboundMiddleware(middleware arctic.ContractMiddleware) {
+	contract.peer.AddInboundMiddleware(middleware)
+}
+
+func (contract StreamingContract) AddOutboundMiddleware(middleware arctic.ContractMiddleware) {
+	contract.peer.AddOutboundMiddleware(middleware)
+}
+
 type OpenNestedContext struct {
 	*arctic.ContractContext
 	Stream NestedContract
@@ -144,11 +186,11 @@ func (contract StreamingContract) NewOpenNestedContext(parent context.Context) (
 }
 
 func (contract StreamingContract) OpenNested(ctx *OpenNestedContext, request Request) (response Response, err error) {
-	return arctic.ContractStreamingCall[Request, Response](ctx.ContractContext, "StreamingContract.OpenNested", request)
+	return arctic.ContractStreamingCallTyped[Request, Response](ctx.ContractContext, ContractMessageStreamingContractOpenNested, "StreamingContract.OpenNested", request)
 }
 
 func (contract StreamingContract) OnOpenNested(handler func(*OpenNestedContext, Request) Response) {
-	arctic.ContractStreamingHandleScoped[Request, Response](contract.peer, contract.scopeID, "StreamingContract.OpenNested", func(ctx *arctic.ContractContext, request Request) Response {
+	arctic.ContractStreamingHandleTypedScoped[Request, Response](contract.peer, contract.scopeID, ContractMessageStreamingContractOpenNested, "StreamingContract.OpenNested", func(ctx *arctic.ContractContext, request Request) Response {
 		var nestedContract NestedContract = NestedContract{peer: contract.peer, scopeID: ctx.ScopeID()}
 		var streamContext *OpenNestedContext = &OpenNestedContext{ContractContext: ctx, Stream: nestedContract}
 		return handler(streamContext, request)
@@ -172,6 +214,14 @@ func RootContractFor() (factory arctic.ContractFactory[RootContract]) {
 	return
 }
 
+func (contract RootContract) AddInboundMiddleware(middleware arctic.ContractMiddleware) {
+	contract.peer.AddInboundMiddleware(middleware)
+}
+
+func (contract RootContract) AddOutboundMiddleware(middleware arctic.ContractMiddleware) {
+	contract.peer.AddOutboundMiddleware(middleware)
+}
+
 type OpenRootContext struct {
 	*arctic.ContractContext
 	Stream StreamingContract
@@ -185,11 +235,11 @@ func (contract RootContract) NewOpenRootContext(parent context.Context) (streamC
 }
 
 func (contract RootContract) OpenRoot(ctx *OpenRootContext, request Request) (response Response, err error) {
-	return arctic.ContractStreamingCall[Request, Response](ctx.ContractContext, "RootContract.OpenRoot", request)
+	return arctic.ContractStreamingCallTyped[Request, Response](ctx.ContractContext, ContractMessageRootContractOpenRoot, "RootContract.OpenRoot", request)
 }
 
 func (contract RootContract) OnOpenRoot(handler func(*OpenRootContext, Request) Response) {
-	arctic.ContractStreamingHandleScoped[Request, Response](contract.peer, contract.scopeID, "RootContract.OpenRoot", func(ctx *arctic.ContractContext, request Request) Response {
+	arctic.ContractStreamingHandleTypedScoped[Request, Response](contract.peer, contract.scopeID, ContractMessageRootContractOpenRoot, "RootContract.OpenRoot", func(ctx *arctic.ContractContext, request Request) Response {
 		var nestedContract StreamingContract = StreamingContract{peer: contract.peer, scopeID: ctx.ScopeID()}
 		var streamContext *OpenRootContext = &OpenRootContext{ContractContext: ctx, Stream: nestedContract}
 		return handler(streamContext, request)

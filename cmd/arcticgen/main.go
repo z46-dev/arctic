@@ -90,21 +90,32 @@ func main() {
 	if len(contracts) == 0 {
 		fail(fmt.Errorf("no marked contract interfaces found"))
 	}
+
 	var contractTypes map[string]string = map[string]string{}
 	for _, contractInfo := range contracts {
 		contractTypes[contractInfo.name] = contractInfo.generatedName
 	}
+
 	for contractIndex := range contracts {
+		for methodIndex := range contracts[contractIndex].methods {
+			contracts[contractIndex].methods[methodIndex].messageType = "ContractMessage" + contracts[contractIndex].generatedName + contracts[contractIndex].methods[methodIndex].name
+		}
+
 		for streamIndex := range contracts[contractIndex].streams {
 			var nestedDefinition string = contracts[contractIndex].streams[streamIndex].nestedDefinition
 			if nestedDefinition == "" {
 				continue
 			}
-			var nestedName string
-			var exists bool
+
+			var (
+				nestedName string
+				exists     bool
+			)
+
 			if nestedName, exists = contractTypes[nestedDefinition]; !exists {
 				fail(fmt.Errorf("stream option references unmarked contract %s", nestedDefinition))
 			}
+
 			contracts[contractIndex].streams[streamIndex].nestedContract = nestedName
 			for methodIndex := range contracts[contractIndex].methods {
 				if contracts[contractIndex].methods[methodIndex].name == contracts[contractIndex].streams[streamIndex].method {
@@ -126,12 +137,27 @@ import (
 )
 
 `, file.Name.Name)
+	fmt.Fprintf(&source, "type ContractMessageType = arctic.ContractMessageType\n\nconst (\n")
+	var firstMessageType bool = true
+	for _, contractInfo := range contracts {
+		for _, method := range contractInfo.methods {
+			if firstMessageType {
+				fmt.Fprintf(&source, "\t%s ContractMessageType = iota\n", method.messageType)
+				firstMessageType = false
+			} else {
+				fmt.Fprintf(&source, "\t%s\n", method.messageType)
+			}
+		}
+	}
+
+	fmt.Fprintf(&source, ")\n")
 	var generatedNames map[string]struct{} = map[string]struct{}{}
 	for _, contractInfo := range contracts {
 		var generatedName string = contractInfo.generatedName
 		if _, exists := generatedNames[generatedName]; exists {
 			fail(fmt.Errorf("multiple definitions generate contract type %s", generatedName))
 		}
+		
 		generatedNames[generatedName] = struct{}{}
 
 		fmt.Fprintf(&source, `
@@ -156,7 +182,15 @@ func %sFor() (factory arctic.ContractFactory[%s]) {
     }
     return
 }
-		`, generatedName, generatedName, generatedName)
+
+func (contract %s) AddInboundMiddleware(middleware arctic.ContractMiddleware) {
+	contract.peer.AddInboundMiddleware(middleware)
+}
+
+func (contract %s) AddOutboundMiddleware(middleware arctic.ContractMiddleware) {
+	contract.peer.AddOutboundMiddleware(middleware)
+}
+		`, generatedName, generatedName, generatedName, generatedName, generatedName)
 		for _, method := range contractInfo.methods {
 			if method.streaming {
 				var contextName string = method.name + "Context"
@@ -175,11 +209,11 @@ func (contract %s) New%sContext(parent context.Context) (streamContext *%s) {
 }
 
 func (contract %s) %s(ctx *%s, request %s) (response %s, err error) {
-	return arctic.ContractStreamingCall[%s, %s](ctx.ContractContext, %q, request)
+	return arctic.ContractStreamingCallTyped[%s, %s](ctx.ContractContext, %s, %q, request)
 }
 
 func (contract %s) On%s(handler func(*%s, %s) %s) {
-	arctic.ContractStreamingHandleScoped[%s, %s](contract.peer, contract.scopeID, %q, func(ctx *arctic.ContractContext, request %s) %s {
+	arctic.ContractStreamingHandleTypedScoped[%s, %s](contract.peer, contract.scopeID, %s, %q, func(ctx *arctic.ContractContext, request %s) %s {
 		var nestedContract %s = %s{peer: contract.peer, scopeID: ctx.ScopeID()}
 		var streamContext *%s = &%s{ContractContext: ctx, Stream: nestedContract}
 		return handler(streamContext, request)
@@ -190,9 +224,9 @@ func (contract %s) On%s(handler func(*%s, %s) %s) {
 						generatedName, method.name, contextName,
 						method.nestedContract, method.nestedContract,
 						contextName,
-						generatedName, method.name, contextName, method.request, method.response, method.request, method.response, generatedName+"."+method.name,
+						generatedName, method.name, contextName, method.request, method.response, method.request, method.response, method.messageType, generatedName+"."+method.name,
 						generatedName, method.name, contextName, method.request, method.response,
-						method.request, method.response, generatedName+"."+method.name, method.request, method.response,
+						method.request, method.response, method.messageType, generatedName+"."+method.name, method.request, method.response,
 						method.nestedContract, method.nestedContract, contextName, contextName)
 					continue
 				}
@@ -235,30 +269,30 @@ func (stream %s) OnResponse(handler func(%s)) {
 
 				fmt.Fprintf(&source, `
 func (contract %s) %s(ctx *%s, request %s) (response %s, err error) {
-	return arctic.ContractStreamingCall[%s, %s](ctx.ContractContext, %q, request)
+	return arctic.ContractStreamingCallTyped[%s, %s](ctx.ContractContext, %s, %q, request)
 }
 
 func (contract %s) On%s(handler func(*%s, %s) %s) {
-	arctic.ContractStreamingHandleScoped[%s, %s](contract.peer, contract.scopeID, %q, func(ctx *arctic.ContractContext, request %s) %s {
+	arctic.ContractStreamingHandleTypedScoped[%s, %s](contract.peer, contract.scopeID, %s, %q, func(ctx *arctic.ContractContext, request %s) %s {
 		var streamContext *%s = &%s{ContractContext: ctx, Stream: %s{context: ctx}}
 		return handler(streamContext, request)
 	})
 }
-`, generatedName, method.name, contextName, method.request, method.response, method.request, method.response, generatedName+"."+method.name,
-					generatedName, method.name, contextName, method.request, method.response, method.request, method.response, generatedName+"."+method.name,
+				`, generatedName, method.name, contextName, method.request, method.response, method.request, method.response, method.messageType, generatedName+"."+method.name,
+					generatedName, method.name, contextName, method.request, method.response, method.request, method.response, method.messageType, generatedName+"."+method.name,
 					method.request, method.response, contextName, contextName, streamName)
 				continue
 			}
 
 			fmt.Fprintf(&source, `
 func (contract %s) %s(ctx context.Context, request %s) (response %s, err error) {
-	return arctic.ContractCallScoped[%s, %s](ctx, contract.peer, contract.scopeID, %q, request)
+	return arctic.ContractCallTypedScoped[%s, %s](ctx, contract.peer, contract.scopeID, %s, %q, request)
 }
 
 func (contract %s) On%s(handler func(*arctic.ContractContext, %s) %s) {
-	arctic.ContractHandleScoped[%s, %s](contract.peer, contract.scopeID, %q, handler)
+	arctic.ContractHandleTypedScoped[%s, %s](contract.peer, contract.scopeID, %s, %q, handler)
 }
-			`, generatedName, method.name, method.request, method.response, method.request, method.response, generatedName+"."+method.name, generatedName, method.name, method.request, method.response, method.request, method.response, generatedName+"."+method.name)
+			`, generatedName, method.name, method.request, method.response, method.request, method.response, method.messageType, generatedName+"."+method.name, generatedName, method.name, method.request, method.response, method.request, method.response, method.messageType, generatedName+"."+method.name)
 		}
 	}
 
@@ -283,6 +317,7 @@ type (
 
 	contractMethod struct {
 		name             string
+		messageType      string
 		request          string
 		response         string
 		streaming        bool

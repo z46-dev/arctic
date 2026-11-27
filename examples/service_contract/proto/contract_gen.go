@@ -8,6 +8,16 @@ import (
 	"github.com/z46-dev/arctic"
 )
 
+type ContractMessageType = arctic.ContractMessageType
+
+const (
+	ContractMessageStreamingContractData ContractMessageType = iota
+	ContractMessageContractJoin
+	ContractMessageContractMath
+	ContractMessageContractDone
+	ContractMessageContractDataStreaming
+)
+
 type StreamingContract struct {
 	peer    *arctic.ContractPeer
 	scopeID uint64
@@ -24,12 +34,20 @@ func StreamingContractFor() (factory arctic.ContractFactory[StreamingContract]) 
 	return
 }
 
+func (contract StreamingContract) AddInboundMiddleware(middleware arctic.ContractMiddleware) {
+	contract.peer.AddInboundMiddleware(middleware)
+}
+
+func (contract StreamingContract) AddOutboundMiddleware(middleware arctic.ContractMiddleware) {
+	contract.peer.AddOutboundMiddleware(middleware)
+}
+
 func (contract StreamingContract) Data(ctx context.Context, request DataStreamingBody) (response DataStreamingBody, err error) {
-	return arctic.ContractCallScoped[DataStreamingBody, DataStreamingBody](ctx, contract.peer, contract.scopeID, "StreamingContract.Data", request)
+	return arctic.ContractCallTypedScoped[DataStreamingBody, DataStreamingBody](ctx, contract.peer, contract.scopeID, ContractMessageStreamingContractData, "StreamingContract.Data", request)
 }
 
 func (contract StreamingContract) OnData(handler func(*arctic.ContractContext, DataStreamingBody) DataStreamingBody) {
-	arctic.ContractHandleScoped[DataStreamingBody, DataStreamingBody](contract.peer, contract.scopeID, "StreamingContract.Data", handler)
+	arctic.ContractHandleTypedScoped[DataStreamingBody, DataStreamingBody](contract.peer, contract.scopeID, ContractMessageStreamingContractData, "StreamingContract.Data", handler)
 }
 
 type Contract struct {
@@ -50,28 +68,36 @@ func ContractFor() (factory arctic.ContractFactory[Contract]) {
 	return
 }
 
+func (contract Contract) AddInboundMiddleware(middleware arctic.ContractMiddleware) {
+	contract.peer.AddInboundMiddleware(middleware)
+}
+
+func (contract Contract) AddOutboundMiddleware(middleware arctic.ContractMiddleware) {
+	contract.peer.AddOutboundMiddleware(middleware)
+}
+
 func (contract Contract) Join(ctx context.Context, request InitialRequest) (response GenericResponse, err error) {
-	return arctic.ContractCallScoped[InitialRequest, GenericResponse](ctx, contract.peer, contract.scopeID, "Contract.Join", request)
+	return arctic.ContractCallTypedScoped[InitialRequest, GenericResponse](ctx, contract.peer, contract.scopeID, ContractMessageContractJoin, "Contract.Join", request)
 }
 
 func (contract Contract) OnJoin(handler func(*arctic.ContractContext, InitialRequest) GenericResponse) {
-	arctic.ContractHandleScoped[InitialRequest, GenericResponse](contract.peer, contract.scopeID, "Contract.Join", handler)
+	arctic.ContractHandleTypedScoped[InitialRequest, GenericResponse](contract.peer, contract.scopeID, ContractMessageContractJoin, "Contract.Join", handler)
 }
 
 func (contract Contract) Math(ctx context.Context, request MathRequest) (response MathResponse, err error) {
-	return arctic.ContractCallScoped[MathRequest, MathResponse](ctx, contract.peer, contract.scopeID, "Contract.Math", request)
+	return arctic.ContractCallTypedScoped[MathRequest, MathResponse](ctx, contract.peer, contract.scopeID, ContractMessageContractMath, "Contract.Math", request)
 }
 
 func (contract Contract) OnMath(handler func(*arctic.ContractContext, MathRequest) MathResponse) {
-	arctic.ContractHandleScoped[MathRequest, MathResponse](contract.peer, contract.scopeID, "Contract.Math", handler)
+	arctic.ContractHandleTypedScoped[MathRequest, MathResponse](contract.peer, contract.scopeID, ContractMessageContractMath, "Contract.Math", handler)
 }
 
 func (contract Contract) Done(ctx context.Context, request struct{}) (response GenericResponse, err error) {
-	return arctic.ContractCallScoped[struct{}, GenericResponse](ctx, contract.peer, contract.scopeID, "Contract.Done", request)
+	return arctic.ContractCallTypedScoped[struct{}, GenericResponse](ctx, contract.peer, contract.scopeID, ContractMessageContractDone, "Contract.Done", request)
 }
 
 func (contract Contract) OnDone(handler func(*arctic.ContractContext, struct{}) GenericResponse) {
-	arctic.ContractHandleScoped[struct{}, GenericResponse](contract.peer, contract.scopeID, "Contract.Done", handler)
+	arctic.ContractHandleTypedScoped[struct{}, GenericResponse](contract.peer, contract.scopeID, ContractMessageContractDone, "Contract.Done", handler)
 }
 
 type DataStreamingContext struct {
@@ -87,11 +113,11 @@ func (contract Contract) NewDataStreamingContext(parent context.Context) (stream
 }
 
 func (contract Contract) DataStreaming(ctx *DataStreamingContext, request DataStreamingRequest) (response GenericResponse, err error) {
-	return arctic.ContractStreamingCall[DataStreamingRequest, GenericResponse](ctx.ContractContext, "Contract.DataStreaming", request)
+	return arctic.ContractStreamingCallTyped[DataStreamingRequest, GenericResponse](ctx.ContractContext, ContractMessageContractDataStreaming, "Contract.DataStreaming", request)
 }
 
 func (contract Contract) OnDataStreaming(handler func(*DataStreamingContext, DataStreamingRequest) GenericResponse) {
-	arctic.ContractStreamingHandleScoped[DataStreamingRequest, GenericResponse](contract.peer, contract.scopeID, "Contract.DataStreaming", func(ctx *arctic.ContractContext, request DataStreamingRequest) GenericResponse {
+	arctic.ContractStreamingHandleTypedScoped[DataStreamingRequest, GenericResponse](contract.peer, contract.scopeID, ContractMessageContractDataStreaming, "Contract.DataStreaming", func(ctx *arctic.ContractContext, request DataStreamingRequest) GenericResponse {
 		var nestedContract StreamingContract = StreamingContract{peer: contract.peer, scopeID: ctx.ScopeID()}
 		var streamContext *DataStreamingContext = &DataStreamingContext{ContractContext: ctx, Stream: nestedContract}
 		return handler(streamContext, request)

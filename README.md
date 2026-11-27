@@ -248,12 +248,13 @@ go run github.com/z46-dev/arctic/examples/udp_basic@latest
 go run github.com/z46-dev/arctic/examples/gob_basic@latest
 go run github.com/z46-dev/arctic/examples/metadata_basic@latest
 go run github.com/z46-dev/arctic/examples/websocket_native@latest
+go run github.com/z46-dev/arctic/examples/service_contract@latest
+go run github.com/z46-dev/arctic/examples/contract_middleware@latest
 ```
 
 The browser WebSocket example includes a Go WASM client and a page that loads it. See [`examples/websocket_browser`](examples/websocket_browser/README.md) for build and browser instructions.
 
 > You can pass `-addr <address>` to override the default bind/connect address for the example. For example:
-
-```bash
-go run github.com/z46-dev/arctic/examples/tcp_basic@latest -addr localhost:9090
-```
+> ```bash
+> go run github.com/z46-dev/arctic/examples/tcp_basic@latest -addr localhost:9090
+> ```

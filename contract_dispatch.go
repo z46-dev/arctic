@@ -106,7 +106,7 @@ func (peer *ContractPeer) dispatchIncoming(frame contractFrame) {
 	peer.mutex.Unlock()
 
 	if handler == nil {
-		_ = peer.send(contractFrame{ID: frame.ID, Kind: "response", StreamID: frame.StreamID, Error: "unknown contract method: " + frame.Method})
+		_ = peer.send(contractFrame{ID: frame.ID, Kind: "response", Type: frame.Type, StreamID: frame.StreamID, Error: "unknown contract method: " + frame.Method})
 		return
 	}
 
@@ -164,14 +164,14 @@ func (peer *ContractPeer) dispatchRequest(frame contractFrame, handler contractH
 		err     error
 	)
 
-	if payload, err = handler(ctx, frame.Payload); err != nil {
-		_ = peer.send(contractFrame{ID: frame.ID, Kind: "response", StreamID: frame.StreamID, Error: err.Error()})
+	if payload, err = handler(ctx, frame.Payload, frame.Type); err != nil {
+		_ = peer.send(contractFrame{ID: frame.ID, Kind: "response", Type: frame.Type, StreamID: frame.StreamID, Error: err.Error()})
 		peer.finishRequest(frame.ID, frame.StreamID, cancel)
 		return
 	}
 
 	if ctx.Err() == nil {
-		if err = peer.send(contractFrame{ID: frame.ID, Kind: "response", StreamID: frame.StreamID, Payload: payload}); err != nil {
+		if err = peer.send(contractFrame{ID: frame.ID, Kind: "response", Type: frame.Type, StreamID: frame.StreamID, Payload: payload}); err != nil {
 			peer.client.handleError(err)
 		}
 	}
