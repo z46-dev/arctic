@@ -441,7 +441,7 @@ func (peer *ContractPeer) runMiddleware(direction contractMiddlewareDirection, c
 		Context:            ctx,
 		closeAfterResponse: closeAfterResponse,
 	}
-	
+
 	for _, apply := range middleware {
 		if action, response, err = apply(middlewareContext, message); err != nil {
 			return
