@@ -30,7 +30,12 @@ type (
 		Body  any
 	}
 
-	ContractMiddleware func(context.Context, *ContractMessage) (ContractMiddlewareAction, any, error)
+	ContractMiddlewareContext struct {
+		context.Context
+		closeAfterResponse *bool
+	}
+
+	ContractMiddleware func(ctx *ContractMiddlewareContext, message *ContractMessage) (action ContractMiddlewareAction, response any, err error)
 
 	contractFrame struct {
 		ID        uint64
@@ -193,9 +198,18 @@ func contractCall[Request, Response any](ctx context.Context, peer *ContractPeer
 	}
 
 	var (
-		callContext context.Context = ctx
-		cancel      context.CancelFunc
+		callContext        context.Context = ctx
+		cancel             context.CancelFunc
+		closeAfterResponse bool
 	)
+
+	defer func() {
+		if closeAfterResponse {
+			if closeErr := peer.client.Close(); err == nil {
+				err = closeErr
+			}
+		}
+	}()
 
 	if peer.timeout > 0 {
 		callContext, cancel = context.WithTimeout(ctx, peer.timeout)
@@ -212,7 +226,7 @@ func contractCall[Request, Response any](ctx context.Context, peer *ContractPeer
 		middlewareResponse any
 	)
 
-	if action, middlewareResponse, err = peer.runMiddleware(contractMiddlewareOutbound, callContext, message); err != nil {
+	if action, middlewareResponse, err = peer.runMiddleware(contractMiddlewareOutbound, callContext, message, &closeAfterResponse); err != nil {
 		return
 	}
 
@@ -334,7 +348,7 @@ func contractCall[Request, Response any](ctx context.Context, peer *ContractPeer
 	}
 
 	message = &ContractMessage{Type: messageType, Phase: ContractMessageResponse, Body: response}
-	if action, _, err = peer.runMiddleware(contractMiddlewareInbound, callContext, message); err != nil {
+	if action, _, err = peer.runMiddleware(contractMiddlewareInbound, callContext, message, &closeAfterResponse); err != nil {
 		return
 	}
 
@@ -407,7 +421,7 @@ func (peer *ContractPeer) AddOutboundMiddleware(middleware ContractMiddleware) {
 	peer.mutex.Unlock()
 }
 
-func (peer *ContractPeer) runMiddleware(direction contractMiddlewareDirection, ctx context.Context, message *ContractMessage) (action ContractMiddlewareAction, response any, err error) {
+func (peer *ContractPeer) runMiddleware(direction contractMiddlewareDirection, ctx context.Context, message *ContractMessage, closeAfterResponse *bool) (action ContractMiddlewareAction, response any, err error) {
 	var (
 		messageType ContractMessageType  = message.Type
 		phase       ContractMessagePhase = message.Phase
@@ -423,8 +437,13 @@ func (peer *ContractPeer) runMiddleware(direction contractMiddlewareDirection, c
 	middleware = append([]ContractMiddleware{}, middleware...)
 	peer.mutex.Unlock()
 
+	var middlewareContext *ContractMiddlewareContext = &ContractMiddlewareContext{
+		Context:            ctx,
+		closeAfterResponse: closeAfterResponse,
+	}
+	
 	for _, apply := range middleware {
-		if action, response, err = apply(ctx, message); err != nil {
+		if action, response, err = apply(middlewareContext, message); err != nil {
 			return
 		}
 
@@ -464,6 +483,13 @@ func (ctx *ContractContext) ScopeID() (scopeID uint64) {
 	return
 }
 
+// CloseAfterResponse closes the peer connection after the associated call completes.
+func (ctx *ContractMiddlewareContext) CloseAfterResponse() {
+	if ctx != nil && ctx.closeAfterResponse != nil {
+		*ctx.closeAfterResponse = true
+	}
+}
+
 func makeContractHandler[Request, Response any](messageType ContractMessageType, handler func(*ContractContext, Request) Response) (registered contractHandler) {
 	registered = func(ctx *ContractContext, payload []byte, incomingType ContractMessageType) (encoded []byte, err error) {
 		if incomingType != messageType {
@@ -483,7 +509,7 @@ func makeContractHandler[Request, Response any](messageType ContractMessageType,
 			response Response
 		)
 
-		if action, result, err = ctx.peer.runMiddleware(contractMiddlewareInbound, ctx, message); err != nil {
+		if action, result, err = ctx.peer.runMiddleware(contractMiddlewareInbound, ctx, message, &ctx.closeAfterResponse); err != nil {
 			return
 		}
 
@@ -511,7 +537,7 @@ func makeContractHandler[Request, Response any](messageType ContractMessageType,
 		}
 
 		message = &ContractMessage{Type: incomingType, Phase: ContractMessageResponse, Body: response}
-		if action, _, err = ctx.peer.runMiddleware(contractMiddlewareOutbound, ctx, message); err != nil {
+		if action, _, err = ctx.peer.runMiddleware(contractMiddlewareOutbound, ctx, message, &ctx.closeAfterResponse); err != nil {
 			return
 		}
 

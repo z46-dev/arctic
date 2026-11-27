@@ -20,6 +20,7 @@ func TestContractMiddleware(t *testing.T) {
 		address        string
 		err            error
 		handlerInvoked atomic.Int32
+		clientClosed   chan struct{} = make(chan struct{})
 	)
 
 	if server, err = arctic.NewContractServer(arctic.ServerConfig{
@@ -31,7 +32,7 @@ func TestContractMiddleware(t *testing.T) {
 	}
 
 	server.OnClient(func(client *arctic.ContractServerClient[proto.Contract]) {
-		client.Contract.AddInboundMiddleware(func(_ context.Context, message *arctic.ContractMessage) (action arctic.ContractMiddlewareAction, response any, err error) {
+		client.Contract.AddInboundMiddleware(func(ctx *arctic.ContractMiddlewareContext, message *arctic.ContractMessage) (action arctic.ContractMiddlewareAction, response any, err error) {
 			if message.Type != proto.ContractMessageContractJoin || message.Phase != arctic.ContractMessageRequest {
 				return
 			}
@@ -46,12 +47,14 @@ func TestContractMiddleware(t *testing.T) {
 				response = proto.GenericResponse{OK: true, Message: "short circuited"}
 			case "inbound-drop":
 				action = arctic.ContractMiddlewareDrop
+			case "server-close-after-response":
+				ctx.CloseAfterResponse()
 			}
 
 			return
 		})
 
-		client.Contract.AddOutboundMiddleware(func(_ context.Context, message *arctic.ContractMessage) (action arctic.ContractMiddlewareAction, _ any, err error) {
+		client.Contract.AddOutboundMiddleware(func(_ *arctic.ContractMiddlewareContext, message *arctic.ContractMessage) (action arctic.ContractMiddlewareAction, _ any, err error) {
 			if message.Type == proto.ContractMessageContractJoin && message.Phase == arctic.ContractMessageResponse {
 				var response proto.GenericResponse = message.Body.(proto.GenericResponse)
 				response.Message = "server outbound: " + response.Message
@@ -87,11 +90,15 @@ func TestContractMiddleware(t *testing.T) {
 		_ = client.Close()
 	})
 
+	client.OnClose(func() {
+		close(clientClosed)
+	})
+
 	if err = client.Connect(); err != nil {
 		t.Fatalf("connect contract client: %v", err)
 	}
 
-	client.Contract.AddOutboundMiddleware(func(_ context.Context, message *arctic.ContractMessage) (action arctic.ContractMiddlewareAction, response any, err error) {
+	client.Contract.AddOutboundMiddleware(func(_ *arctic.ContractMiddlewareContext, message *arctic.ContractMessage) (action arctic.ContractMiddlewareAction, response any, err error) {
 		if message.Type != proto.ContractMessageContractJoin || message.Phase != arctic.ContractMessageRequest {
 			return
 		}
@@ -111,7 +118,7 @@ func TestContractMiddleware(t *testing.T) {
 		return
 	})
 
-	client.Contract.AddInboundMiddleware(func(_ context.Context, message *arctic.ContractMessage) (action arctic.ContractMiddlewareAction, _ any, err error) {
+	client.Contract.AddInboundMiddleware(func(_ *arctic.ContractMiddlewareContext, message *arctic.ContractMessage) (action arctic.ContractMiddlewareAction, _ any, err error) {
 		if message.Type == proto.ContractMessageContractJoin && message.Phase == arctic.ContractMessageResponse {
 			var response proto.GenericResponse = message.Body.(proto.GenericResponse)
 			response.Message = "client inbound: " + response.Message
@@ -149,5 +156,17 @@ func TestContractMiddleware(t *testing.T) {
 
 	if handlerInvoked.Load() != handlerCount {
 		t.Fatalf("dropped or short-circuited requests reached the handler: before=%d after=%d", handlerCount, handlerInvoked.Load())
+	}
+
+	if response, err = client.Contract.Join(context.Background(), proto.InitialRequest{Message: "server-close-after-response"}); err != nil {
+		t.Fatalf("join with close-after-response middleware: %v", err)
+	} else if !response.OK {
+		t.Fatalf("expected successful close-after-response call, got %+v", response)
+	}
+
+	select {
+	case <-clientClosed:
+	case <-time.After(time.Second):
+		t.Fatal("middleware CloseAfterResponse did not close the connection")
 	}
 }

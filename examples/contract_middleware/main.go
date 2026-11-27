@@ -78,6 +78,7 @@ func run() (err error) {
 		"client-reply",
 		"server-drop",
 		"client-drop",
+		"server-close",
 	} {
 		var response proto.PingResponse
 		if response, err = client.Contract.Ping(context.Background(), proto.PingRequest{Message: message}); errors.Is(err, arctic.ErrContractMessageDropped) {
@@ -94,7 +95,7 @@ func run() (err error) {
 }
 
 func setupServer(client *arctic.ContractServerClient[proto.Contract]) {
-	client.Contract.AddInboundMiddleware(func(_ context.Context, message *arctic.ContractMessage) (action arctic.ContractMiddlewareAction, response any, err error) {
+	client.Contract.AddInboundMiddleware(func(ctx *arctic.ContractMiddlewareContext, message *arctic.ContractMessage) (action arctic.ContractMiddlewareAction, response any, err error) {
 		if message.Type != proto.ContractMessageContractPing || message.Phase != arctic.ContractMessageRequest {
 			return
 		}
@@ -109,12 +110,14 @@ func setupServer(client *arctic.ContractServerClient[proto.Contract]) {
 			response = proto.PingResponse{Message: "answered inbound"}
 		case "server-drop":
 			action = arctic.ContractMiddlewareDrop
+		case "server-close":
+			ctx.CloseAfterResponse()
 		}
 
 		return
 	})
 
-	client.Contract.AddOutboundMiddleware(func(_ context.Context, message *arctic.ContractMessage) (action arctic.ContractMiddlewareAction, _ any, err error) {
+	client.Contract.AddOutboundMiddleware(func(_ *arctic.ContractMiddlewareContext, message *arctic.ContractMessage) (action arctic.ContractMiddlewareAction, _ any, err error) {
 		if message.Type == proto.ContractMessageContractPing && message.Phase == arctic.ContractMessageResponse {
 			var response proto.PingResponse = message.Body.(proto.PingResponse)
 			response.Message = "server outbound: " + response.Message
@@ -131,7 +134,7 @@ func setupServer(client *arctic.ContractServerClient[proto.Contract]) {
 }
 
 func setupClient(contract proto.Contract) {
-	contract.AddOutboundMiddleware(func(_ context.Context, message *arctic.ContractMessage) (action arctic.ContractMiddlewareAction, response any, err error) {
+	contract.AddOutboundMiddleware(func(_ *arctic.ContractMiddlewareContext, message *arctic.ContractMessage) (action arctic.ContractMiddlewareAction, response any, err error) {
 		if message.Type != proto.ContractMessageContractPing || message.Phase != arctic.ContractMessageRequest {
 			return
 		}
@@ -151,7 +154,7 @@ func setupClient(contract proto.Contract) {
 		return
 	})
 
-	contract.AddInboundMiddleware(func(_ context.Context, message *arctic.ContractMessage) (action arctic.ContractMiddlewareAction, _ any, err error) {
+	contract.AddInboundMiddleware(func(_ *arctic.ContractMiddlewareContext, message *arctic.ContractMessage) (action arctic.ContractMiddlewareAction, _ any, err error) {
 		if message.Type == proto.ContractMessageContractPing && message.Phase == arctic.ContractMessageResponse {
 			var response proto.PingResponse = message.Body.(proto.PingResponse)
 			response.Message = "client inbound: " + response.Message
