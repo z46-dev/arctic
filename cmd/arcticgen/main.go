@@ -157,7 +157,7 @@ import (
 		if _, exists := generatedNames[generatedName]; exists {
 			fail(fmt.Errorf("multiple definitions generate contract type %s", generatedName))
 		}
-		
+
 		generatedNames[generatedName] = struct{}{}
 
 		fmt.Fprintf(&source, `
