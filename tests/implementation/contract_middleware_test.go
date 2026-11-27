@@ -3,6 +3,7 @@ package implementation
 import (
 	"context"
 	"errors"
+	"reflect"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -37,6 +38,14 @@ func TestContractMiddleware(t *testing.T) {
 				return
 			}
 
+			if ctx.RequestType() != reflect.TypeOf(proto.InitialRequest{}) || ctx.ResponseType() != reflect.TypeOf(proto.GenericResponse{}) {
+				t.Errorf("middleware got unexpected request/response types: %v / %v", ctx.RequestType(), ctx.ResponseType())
+			}
+
+			if ctx.ZeroRequestValue() != (any)(proto.InitialRequest{}) || ctx.ZeroResponseValue() != (any)(proto.GenericResponse{}) {
+				t.Errorf("middleware returned unexpected zero values: %#v / %#v", ctx.ZeroRequestValue(), ctx.ZeroResponseValue())
+			}
+
 			var request proto.InitialRequest = message.Body.(proto.InitialRequest)
 			switch request.Message {
 			case "inbound-mutate":
@@ -54,8 +63,12 @@ func TestContractMiddleware(t *testing.T) {
 			return
 		})
 
-		client.Contract.AddOutboundMiddleware(func(_ *arctic.ContractMiddlewareContext, message *arctic.ContractMessage) (action arctic.ContractMiddlewareAction, _ any, err error) {
+		client.Contract.AddOutboundMiddleware(func(ctx *arctic.ContractMiddlewareContext, message *arctic.ContractMessage) (action arctic.ContractMiddlewareAction, _ any, err error) {
 			if message.Type == proto.ContractMessageContractJoin && message.Phase == arctic.ContractMessageResponse {
+				if ctx.RequestType() != reflect.TypeOf(proto.InitialRequest{}) || ctx.ResponseType() != reflect.TypeOf(proto.GenericResponse{}) {
+					t.Errorf("response middleware got unexpected request/response types: %v / %v", ctx.RequestType(), ctx.ResponseType())
+				}
+
 				var response proto.GenericResponse = message.Body.(proto.GenericResponse)
 				response.Message = "server outbound: " + response.Message
 				message.Body = response

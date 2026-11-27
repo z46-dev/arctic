@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -33,6 +34,8 @@ type (
 	ContractMiddlewareContext struct {
 		context.Context
 		closeAfterResponse *bool
+		requestType        reflect.Type
+		responseType       reflect.Type
 	}
 
 	ContractMiddleware func(ctx *ContractMiddlewareContext, message *ContractMessage) (action ContractMiddlewareAction, response any, err error)
@@ -50,7 +53,11 @@ type (
 		Error     string
 	}
 
-	contractHandler    func(*ContractContext, []byte, ContractMessageType) ([]byte, error)
+	contractHandler      func(*ContractContext, []byte, ContractMessageType) ([]byte, error)
+	contractMessageTypes struct {
+		request  reflect.Type
+		response reflect.Type
+	}
 	contractHandlerKey struct {
 		scopeID uint64
 		method  string
@@ -226,7 +233,8 @@ func contractCall[Request, Response any](ctx context.Context, peer *ContractPeer
 		middlewareResponse any
 	)
 
-	if action, middlewareResponse, err = peer.runMiddleware(contractMiddlewareOutbound, callContext, message, &closeAfterResponse); err != nil {
+	var messageTypes contractMessageTypes = contractMessageTypesFor[Request, Response]()
+	if action, middlewareResponse, err = peer.runMiddleware(contractMiddlewareOutbound, callContext, message, &closeAfterResponse, messageTypes); err != nil {
 		return
 	}
 
@@ -348,7 +356,7 @@ func contractCall[Request, Response any](ctx context.Context, peer *ContractPeer
 	}
 
 	message = &ContractMessage{Type: messageType, Phase: ContractMessageResponse, Body: response}
-	if action, _, err = peer.runMiddleware(contractMiddlewareInbound, callContext, message, &closeAfterResponse); err != nil {
+	if action, _, err = peer.runMiddleware(contractMiddlewareInbound, callContext, message, &closeAfterResponse, messageTypes); err != nil {
 		return
 	}
 
@@ -421,7 +429,7 @@ func (peer *ContractPeer) AddOutboundMiddleware(middleware ContractMiddleware) {
 	peer.mutex.Unlock()
 }
 
-func (peer *ContractPeer) runMiddleware(direction contractMiddlewareDirection, ctx context.Context, message *ContractMessage, closeAfterResponse *bool) (action ContractMiddlewareAction, response any, err error) {
+func (peer *ContractPeer) runMiddleware(direction contractMiddlewareDirection, ctx context.Context, message *ContractMessage, closeAfterResponse *bool, messageTypes contractMessageTypes) (action ContractMiddlewareAction, response any, err error) {
 	var (
 		messageType ContractMessageType  = message.Type
 		phase       ContractMessagePhase = message.Phase
@@ -440,6 +448,8 @@ func (peer *ContractPeer) runMiddleware(direction contractMiddlewareDirection, c
 	var middlewareContext *ContractMiddlewareContext = &ContractMiddlewareContext{
 		Context:            ctx,
 		closeAfterResponse: closeAfterResponse,
+		requestType:        messageTypes.request,
+		responseType:       messageTypes.response,
 	}
 
 	for _, apply := range middleware {
@@ -457,6 +467,12 @@ func (peer *ContractPeer) runMiddleware(direction contractMiddlewareDirection, c
 		}
 	}
 
+	return
+}
+
+func contractMessageTypesFor[Request, Response any]() (messageTypes contractMessageTypes) {
+	messageTypes.request = reflect.TypeOf((*Request)(nil)).Elem()
+	messageTypes.response = reflect.TypeOf((*Response)(nil)).Elem()
 	return
 }
 
@@ -490,6 +506,42 @@ func (ctx *ContractMiddlewareContext) CloseAfterResponse() {
 	}
 }
 
+// RequestType returns the declared request type for the current contract method.
+func (ctx *ContractMiddlewareContext) RequestType() (requestType reflect.Type) {
+	if ctx != nil {
+		requestType = ctx.requestType
+	}
+
+	return
+}
+
+// ResponseType returns the declared response type for the current contract method.
+func (ctx *ContractMiddlewareContext) ResponseType() (responseType reflect.Type) {
+	if ctx != nil {
+		responseType = ctx.responseType
+	}
+
+	return
+}
+
+// ZeroRequestValue returns the zero value of the current method's request type.
+func (ctx *ContractMiddlewareContext) ZeroRequestValue() (request any) {
+	if ctx != nil && ctx.requestType != nil {
+		request = reflect.Zero(ctx.requestType).Interface()
+	}
+
+	return
+}
+
+// ZeroResponseValue returns the zero value of the current method's response type.
+func (ctx *ContractMiddlewareContext) ZeroResponseValue() (response any) {
+	if ctx != nil && ctx.responseType != nil {
+		response = reflect.Zero(ctx.responseType).Interface()
+	}
+
+	return
+}
+
 func makeContractHandler[Request, Response any](messageType ContractMessageType, handler func(*ContractContext, Request) Response) (registered contractHandler) {
 	registered = func(ctx *ContractContext, payload []byte, incomingType ContractMessageType) (encoded []byte, err error) {
 		if incomingType != messageType {
@@ -509,7 +561,8 @@ func makeContractHandler[Request, Response any](messageType ContractMessageType,
 			response Response
 		)
 
-		if action, result, err = ctx.peer.runMiddleware(contractMiddlewareInbound, ctx, message, &ctx.closeAfterResponse); err != nil {
+		var messageTypes contractMessageTypes = contractMessageTypesFor[Request, Response]()
+		if action, result, err = ctx.peer.runMiddleware(contractMiddlewareInbound, ctx, message, &ctx.closeAfterResponse, messageTypes); err != nil {
 			return
 		}
 
@@ -537,7 +590,7 @@ func makeContractHandler[Request, Response any](messageType ContractMessageType,
 		}
 
 		message = &ContractMessage{Type: incomingType, Phase: ContractMessageResponse, Body: response}
-		if action, _, err = ctx.peer.runMiddleware(contractMiddlewareOutbound, ctx, message, &ctx.closeAfterResponse); err != nil {
+		if action, _, err = ctx.peer.runMiddleware(contractMiddlewareOutbound, ctx, message, &ctx.closeAfterResponse, messageTypes); err != nil {
 			return
 		}
 

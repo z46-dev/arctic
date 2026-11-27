@@ -107,7 +107,9 @@ func setupServer(client *arctic.ContractServerClient[proto.Contract]) {
 			message.Body = request
 		case "server-reply":
 			action = arctic.ContractMiddlewareRespond
-			response = proto.PingResponse{Message: "answered inbound"}
+			var reply proto.PingResponse = ctx.ZeroResponseValue().(proto.PingResponse)
+			reply.Message = "answered inbound"
+			response = reply
 		case "server-drop":
 			action = arctic.ContractMiddlewareDrop
 		case "server-close":
